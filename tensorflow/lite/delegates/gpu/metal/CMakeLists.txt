@@ -29,3 +29,4 @@ foreach(lib_name ${MM_LIBS})
 		${lib_name}	
 	)
 endforeach()
+
