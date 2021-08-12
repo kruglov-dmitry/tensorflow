@@ -1,4 +1,4 @@
-list(APPEND CC_LIBS
+list(APPEND CC_SRCS
 	buffer
 	compute_task
 	inference_context
@@ -9,7 +9,7 @@ list(APPEND CC_LIBS
 	texture2d
 )
 
-foreach(lib_name ${CC_LIBS})
+foreach(lib_name ${CC_SRCS})
 	set_source_files_properties(${lib_name}.cc  PROPERTIES LANGUAGE OBJCXX)
 	add_library("${lib_name}" STATIC ${lib_name}.cc)
 	set_target_properties(${lib_name} PROPERTIES LINKER_LANGUAGE OBJCXX)
@@ -19,11 +19,11 @@ foreach(lib_name ${CC_LIBS})
 endforeach()
 
 
-list(APPEND MM_LIBS
+list(APPEND MM_SRCS
 	buffer_convert
 	common
 )
-foreach(lib_name ${MM_LIBS})
+foreach(lib_name ${MM_SRCS})
 	add_library("${lib_name}" STATIC ${lib_name}.mm)
 	target_link_libraries(
 		${lib_name}	

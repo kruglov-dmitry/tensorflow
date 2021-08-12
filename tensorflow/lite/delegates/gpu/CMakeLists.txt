@@ -1,4 +1,4 @@
-set(SOURCE_FILES
+set(SRCS
 	metal_delegate.mm
 	metal_delegate.h
 )
@@ -6,7 +6,7 @@ set(SOURCE_FILES
 include_directories(${CMAKE_BINARY_DIR}/abseil-cpp)
 include_directories(${CMAKE_BINARY_DIR}/flatbuffers/include)
 
-add_library(metal_delegate STATIC ${SOURCE_FILES})
+add_library(metal_delegate STATIC ${SRCS})
 
 target_link_libraries(metal_delegate)
 
