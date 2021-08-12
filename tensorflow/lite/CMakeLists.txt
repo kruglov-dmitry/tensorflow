@@ -64,6 +64,7 @@ option(TFLITE_ENABLE_RESOURCE "Enable experimental support for resources" ON)
 option(TFLITE_ENABLE_NNAPI "Enable NNAPI (Android only)." ON)
 option(TFLITE_ENABLE_MMAP "Enable MMAP (unsupported on Windows)" ON)
 option(TFLITE_ENABLE_GPU "Enable GPU" OFF)
+option(TFLITE_ENABLE_METAL "Enable Metal delegate (iOs only)" OFF)
 # This must be enabled when converting from TF models with SELECT_TF_OPS
 # enabled.
 # https://www.tensorflow.org/lite/guide/ops_select#converting_the_model
@@ -452,3 +453,8 @@ target_compile_options(_pywrap_tensorflow_interpreter_wrapper
   PUBLIC ${TFLITE_TARGET_PUBLIC_OPTIONS}
   PRIVATE ${TFLITE_TARGET_PRIVATE_OPTIONS}
 )
+
+IF(TFLITE_ENABLE_METAL AND CMAKE_SYSTEM_NAME STREQUAL Darwin)
+	enable_language(OBJCXX)
+	add_subdirectory(delegates/gpu)
+ENDIF()
