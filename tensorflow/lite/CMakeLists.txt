@@ -37,10 +37,7 @@ endif()
 cmake_policy(SET CMP0028 NEW)
 # Enable MACOSX_RPATH (@rpath) for built dynamic libraries.
 cmake_policy(SET CMP0042 NEW)
-
 project(tensorflow-lite C CXX)
-
-
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(TENSORFLOW_SOURCE_DIR "" CACHE PATH
   "Directory that contains the TensorFlow project"
