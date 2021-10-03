@@ -118,14 +118,15 @@ constexpr char kWriteRequestTimeout[] = "GCS_WRITE_REQUEST_TIMEOUT_SECS";
 // The environment variable to configure an additional header to send with
 // all requests to GCS (format HEADERNAME:HEADERCONTENT)
 constexpr char kAdditionalRequestHeader[] = "GCS_ADDITIONAL_REQUEST_HEADER";
-// The environment variable to configure the throttle (format: <int64>)
+// The environment variable to configure the throttle (format: <int64_t>)
 constexpr char kThrottleRate[] = "GCS_THROTTLE_TOKEN_RATE";
-// The environment variable to configure the token bucket size (format: <int64>)
+// The environment variable to configure the token bucket size (format:
+// <int64_t>)
 constexpr char kThrottleBucket[] = "GCS_THROTTLE_BUCKET_SIZE";
 // The environment variable that controls the number of tokens per request.
-// (format: <int64>)
+// (format: <int64_t>)
 constexpr char kTokensPerRequest[] = "GCS_TOKENS_PER_REQUEST";
-// The environment variable to configure the initial tokens (format: <int64>)
+// The environment variable to configure the initial tokens (format: <int64_t>)
 constexpr char kInitialTokens[] = "GCS_INITIAL_TOKENS";
 
 // The environment variable to customize which GCS bucket locations are allowed,
@@ -598,9 +599,9 @@ class GcsWritableFile : public WritableFile {
     if (upload_status.code() == errors::Code::NOT_FOUND) {
       // GCS docs recommend retrying the whole upload. We're relying on the
       // RetryingFileSystem to retry the Sync() call.
-      return errors::Unavailable(
-          strings::StrCat("Upload to gs://", bucket_, "/", object_,
-                          " failed, caused by: ", upload_status.ToString()));
+      return errors::Unavailable(strings::StrCat(
+          "Upload to gs://", bucket_, "/", object_,
+          " failed, caused by: ", upload_status.error_message()));
     }
     if (upload_status.ok()) {
       if (should_compose) {

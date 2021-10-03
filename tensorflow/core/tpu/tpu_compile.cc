@@ -202,7 +202,9 @@ Status OptimizeGraph(const tpu::TPUCompileMetadataProto& metadata,
         metadata, arg_shapes, graph->get(), flr, &shape_info));
     std::unordered_map<string, std::vector<PartialTensorShape>> shape_map;
     ConvertGraphShapeInfoToShapeMap(**graph, shape_info, &shape_map);
-    optimizer.Optimize(flr, flr->env(), flr->device(), graph, &shape_map);
+    GraphOptimizer::Options optimizer_opts;
+    optimizer_opts.shape_map = &shape_map;
+    optimizer.Optimize(flr, flr->env(), flr->device(), graph, optimizer_opts);
   }
 
   TF_RETURN_IF_ERROR(RewriteTensorListWithConstElement(graph->get(), fld));
@@ -366,7 +368,7 @@ Status RunShapeInferenceOnComputation(
 
 Status CompileTFFunctionToHlo(
     const FunctionLibraryDefinition& flib_def, int graph_def_version,
-    const XlaCompiler::ShapeRepresentationFn shape_representation_fn,
+    const XlaHelpers::ShapeRepresentationFn shape_representation_fn,
     const std::vector<TensorShape>& arg_shapes,
     const GuaranteedConsts& guaranteed_constants, const NameAttrList& function,
     const tpu::TPUCompileMetadataProto& metadata,
@@ -449,7 +451,7 @@ Status CompileTFFunctionToHlo(
 Status GetShardingInfo(
     const tpu::TPUCompileMetadataProto& metadata,
     absl::Span<const TensorShape> arg_shapes,
-    const XlaCompiler::ShapeRepresentationFn shape_representation_fn,
+    const XlaHelpers::ShapeRepresentationFn shape_representation_fn,
     std::vector<tpu::ShardingAndIndex>* arg_core_mapping,
     std::vector<std::vector<xla::Shape>>* per_core_arg_shapes) {
   arg_core_mapping->clear();

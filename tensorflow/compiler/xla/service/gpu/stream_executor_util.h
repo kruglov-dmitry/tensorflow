@@ -27,7 +27,6 @@ limitations under the License.
 #include "tensorflow/compiler/xla/xla_data.pb.h"
 #include "tensorflow/core/platform/stream_executor_no_cuda.h"
 #include "tensorflow/core/protobuf/autotuning.pb.h"
-#include "tensorflow/stream_executor/gpu/gpu_asm_opts.h"
 #include "tensorflow/stream_executor/kernel_spec.h"
 
 // Helper functions for interacting with StreamExecutor.
@@ -65,13 +64,18 @@ FindVectorizedFeatureDims(const ConvolutionDimensionNumbers& dnums,
                           const Shape& input, const Shape& filter,
                           const Shape& output);
 
-// Generates and returns a unique lock per each provided executor.
+// Generates and returns a unique lock per the provided executor.
 // Guarantees that blocks of code both holding a lock for the same provided
 // executor (as given by this function) will not be running concurrently.
 //
 // This is used to prevent other XLA instances from trying to autotune on a
 // device while another thread is using it.
 tensorflow::mutex_lock LockGpu(const se::StreamExecutor* stream_exec);
+
+// Generates and returns a shared lock per the provided executor.
+//
+// Threads that call LockGpuShared() may execute concurrently with each other.
+tensorflow::tf_shared_lock LockGpuShared(const se::StreamExecutor* stream_exec);
 
 // Creates a kernel with a provided name, based from provided PTX in ptx.
 // The kernel should be executed using the provided executor.
@@ -87,9 +91,6 @@ StatusOr<std::unique_ptr<se::KernelBase>> CreateKernel(
 Status ExecuteKernelOnStream(const se::KernelBase& kernel,
                              absl::Span<const se::DeviceMemoryBase> args,
                              const LaunchDimensions& dims, se::Stream* stream);
-
-// Create GpuAsmOpts out of HloModuleConfig.
-se::GpuAsmOpts PtxOptsFromConfig(const HloModuleConfig& hlo_module_config);
 
 // Initializes `buffer` with random data on `stream`.
 // `rng_state` is an inout parameter for the pseudorandom generator state.

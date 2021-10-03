@@ -16,11 +16,11 @@ limitations under the License.
 
 #include <deque>
 
-#include "tensorflow/core/common_runtime/metrics.h"
 #include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/data/stats_utils.h"
 #include "tensorflow/core/framework/dataset.h"
+#include "tensorflow/core/framework/metrics.h"
 #include "tensorflow/core/framework/model.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/stats_aggregator.h"
@@ -154,6 +154,8 @@ class PrefetchDatasetOp::Dataset : public DatasetBase {
 
     Status Initialize(IteratorContext* ctx) override {
       mutex_lock l(*mu_);
+      interleave_depth_ = ctx->interleave_depth();
+
       if (buffer_size_->value == model::kAutotune) {
         buffer_size_->value = buffer_size_min_;
       }
@@ -339,6 +341,9 @@ class PrefetchDatasetOp::Dataset : public DatasetBase {
             "slack",
             strings::Printf("%lld", static_cast<long long>(slack_us_.load()))));
       }
+      result.push_back(std::make_pair(
+          "interleave_depth",
+          strings::Printf("%lld", static_cast<long long>(interleave_depth_))));
       return result;
     }
 
@@ -583,7 +588,14 @@ class PrefetchDatasetOp::Dataset : public DatasetBase {
 
     // Method for deregistering the cancellation callback.
     std::function<void()> deregister_fn_;
+
+    // Records the number of ParallelInterleave operations in the path from the
+    // root node to this node (not including this node) in the input pipeline
+    // tree. We record the interleave depth so that it can be included in the
+    // trace metadata.
+    int64 interleave_depth_ = -1;
   };
+
   const DatasetBase* const input_;
   const int64_t buffer_size_;
 

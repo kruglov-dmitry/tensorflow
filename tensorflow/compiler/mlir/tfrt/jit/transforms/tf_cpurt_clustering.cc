@@ -18,11 +18,11 @@ limitations under the License.
 #include <functional>
 #include <utility>
 
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Operation.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
-#include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
-#include "mlir/IR/Operation.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops_a_m.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops_n_z.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_remaining_ops.h"
@@ -729,8 +729,14 @@ mlir::LogicalResult VerifyCluster(const Cluster& cluster) {
       Operation* defining_op = value.getDefiningOp();
       if (!defining_op) continue;
 
+      // Check if value will be sunk into the cluster body.
+      auto const_op = mlir::dyn_cast<mlir::TF::ConstOp>(defining_op);
+      if (const_op && succeeded(IsCompilableConstant(const_op.value())))
+        continue;
+
+      // Skip clusters with non-f32 inputs.
       if (!ops.contains(defining_op) &&
-          mlir::getElementTypeOrSelf(value.getType()).isInteger(1))
+          !mlir::getElementTypeOrSelf(value.getType()).isF32())
         return failure();
     }
   }

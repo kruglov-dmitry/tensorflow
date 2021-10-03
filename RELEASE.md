@@ -26,10 +26,24 @@
     and their `experimental` endpoints
     (`tf.keras.experimental.models.LinearModel` and
     `tf.keras.experimental.models.WideDeepModel`) are being deprecated.
+  * RNG behavior change for all `tf.keras.initializers` classes. For any class
+    constructed with a fixed seed, it will no longer generate same value
+    when invoked multiple times. Instead, it will return different value, but a
+    determinisitic sequence. This change will make the initialize behavior align
+    between v1 and v2.
 
 * `tf.lite`:
   * Rename fields `SignatureDef` table in schema to maximize the parity with
     TF SavedModel's Signature concept.
+  * Deprecate Makefile builds. Makefile users need to migrate their builds to
+    CMake or Bazel. Please refer to the
+    [Build TensorFlow Lite with CMake](https://www.tensorflow.org/lite/guide/build_cmake)
+    and [Build TensorFlow Lite for ARM boards](https://www.tensorflow.org/lite/guide/build_arm)
+    for the migration.
+  * Deprecate tflite::OpResolver::GetDelegates and the list returned by TfLite's
+    BuiltinOpResolver::GetDelegates is now always empty. Instead, recommend
+    using new method tflite::OpResolver::GetDelegateCreators in order to achieve
+    lazy initialization on TfLite delegate instances.
 
 * TF Core:
     *   `tf.Graph.get_name_scope()` now always returns a string, as documented.
@@ -53,6 +67,10 @@
         2.6): Use `tf.raw_ops.SparseSegmentSumGrad` instead. Directly calling
         this op is typically not necessary, as it is automatically used when
         computing the gradient of `tf.sparse.segment_sum`.
+    *   Renaming of tensorflow::int64 to int_64_t in numerous places (the former
+        is an alias for the latter) which could result in needing to regenerate
+        selective op registration headers else execution would fail with
+        unregistered kernels error.
 
 ## Known Caveats
 
@@ -101,6 +119,9 @@
         Static sharding (auto-sharding) requires the number of tf.data service
         workers be fixed. Users need to specify the worker addresses in
         `tensorflow.data.experimental.DispatcherConfig`.
+    *   `tf.data.experimental.service.register_dataset` now accepts optional
+        `compression` argument.
+
 *  Keras:
   *  `tf.keras.layers.Conv` now includes a public `convolution_op` method.
       This method can be used to simplify the implementation of Conv subclasses.
@@ -121,6 +142,62 @@
       ```
   * Added `merge_state()` method to `tf.keras.metrics.Metric` for use in
     distributed computations.
+  * Added `sparse` and `ragged` options to `tf.keras.layers.TextVectorization`
+    to allow for `SparseTensor` and `RaggedTensor` outputs from the layer.
+*  distribute.experimental.rpc package:
+   * distribute.experimental.rpc package introduces APIs to create a GRPC based
+    server to register tf.function methods and a GRPC client to invoke remote
+    registered methods. RPC APIs are intended for multi-client setups i.e. server
+  and clients are started in separate binaries independently.
+
+   * Example usage to create server:
+     ```
+        server = tf.distribute.experimental.rpc.Server.create("grpc", 
+                "127.0.0.1:1234")
+        @tf.function(input_signature=[
+          tf.TensorSpec([], tf.int32),
+          tf.TensorSpec([], dtypes.int32)
+        ])
+        def _remote_multiply(a, b):
+          return tf.math.multiply(a, b)
+
+        server.register("multiply", _remote_multiply)
+     ```
+    * Example usage to create client:
+      ```
+      client = tf.distribute.experimental.rpc.Client.create("grpc", address)
+      a = tf.constant(2, dtype=tf.int32)
+      b = tf.constant(3, dtype=tf.int32)
+      result = client.multiply(a, b)
+      ```
+* `tf.lite`:
+  * Add experimental API `experimental_from_jax` to support conversion from Jax
+    models to TensorFlow Lite.
+  * Support uint32 data type for cast op.
+  * Add experimental quantization debugger `tf.lite.QuantizationDebugger`
+
+* Extension Types
+  * Add experimental API to define new Python classes that can be handled by
+    TensorFlow APIs.  To create an extension type, simply define a Python class
+    with `tf.experimental.ExtensionType` as its base, and use type annotations
+    to specify the type for each field.  E.g.:
+    ```
+    class MaskedTensor(tf.experimental.ExtensionType):
+      values: tf.Tensor
+      mask: tf.Tensor
+    ```
+    The `tf.ExtensionType` base class works similarly to
+    [`typing.NamedTuple`](https://docs.python.org/3/library/typing.html#typing.NamedTuple)
+    and [`@dataclasses.dataclass`](https://docs.python.org/3/library/dataclasses.html#dataclasses.dataclass)
+    from the standard Python library.
+  * Extension types are supported by Keras, tf.data, TF-hub, SavedModel,
+    tf.function, control flow ops, py_function, and distribution strategy.
+  * Add "dispatch decorators" that can be used to override the default behavior
+    of TensorFlow ops (such as `tf.add` or `tf.concat`) when they are applied to
+    ExtensionType values.
+  * The `BatchableExtensionType` API can be used to define extension types that
+    support APIs that make use of batching, such as `tf.data.Dataset` and
+    `tf.map_fn`.
 
 ## Bug Fixes and Other Changes
 
@@ -132,7 +209,27 @@
         *   Added argument `alg` to `tf.random.stateless_*` functions to explicitly select the RNG algorithm.
         *   Added `tf.nn.experimental.stateless_dropout`, a stateless version of `tf.nn.dropout`.
         *   `tf.random.Generator` now can be created inside the scope of `tf.distribute.experimental.ParameterServerStrategy` and `tf.distribute.experimental.CentralStorageStrategy`.
+    * Added an experimental session config
+      `tf.experimental.disable_functional_ops_lowering` which disables
+      functional control flow op lowering optimization. This is useful when
+      executing within a portable runtime where control flow op kernels may not
+      be loaded due to selective registration.
+    * Added a new experimental argument `experimental_is_anonymous` to the
+      `__init__` function of `tf.lookup.StaticHashTable`,
+      `tf.lookup.StaticVocabularyTable`,
+      `tf.lookup.experimental.MutableHashTable` and
+      `tf.lookup.experimental.DenseHashTable`, to create the table in anonymous
+      mode. In this mode, the table resource can only be accessed via resource
+      handles (not resource names) and will be deleted automatically when all
+      resource handles pointing to it are gone.
 *   `tf.data`:
+    *   Introducing the `tf.data.experimental.at` API which provides random
+        access for input pipelines that consist of transformations that support
+        random access. The initial set of transformations that support random
+        access includes: `tf.data.Dataset.from_tensor_slices`,
+        `tf.data.Dataset.shuffle`, `tf.data.Dataset.batch`,
+        `tf.data.Dataset.shard`, `tf.data.Dataset.map`,
+        `tf.data.Dataset.range`, `tf.data.Dataset.skip`.
     *   Promoting `tf.data.Options.experimental_deterministic` API to
         `tf.data.Options.deterministic` and deprecating the experimental
         endpoint.
@@ -140,12 +237,27 @@
         `tf.data.Options.experimental_optimization.autotune*` to a newly created
         `tf.data.Options.autotune.*` and removing support for
         `tf.data.Options.experimental_optimization.autotune_buffers`.
+    *   Added support for user-defined names of tf.data core Python API, which
+        can be used to disambiguate tf.data events in TF Profiler Trace Viewer.
+    *   Promoting
+        `tf.data.experimental.sample_from_datasets` API to
+        `tf.data.Dataset.sample_from_datasets` and deprecating the experimental
+        endpoint.
+    *   Promoting
+        `tf.data.experimental.choose_from_datasets` API to
+        `tf.data.Dataset.choose_from_datasets` and deprecating the experimental
+        endpoint.
 *   TF SavedModel:
     *   Custom gradients are now saved by default. See `tf.saved_model.SaveOptions` to disable this.
+    *   The saved_model_cli's `--input_examples` inputs are now restricted to
+        python literals to avoid code injection.
 *   XLA:
     * Added a new API that allows custom call functions to signal errors. The
       old API will be deprecated in a future release. See
       https://www.tensorflow.org/xla/custom_call for details.
+    * XLA:GPU reductions are deterministic by default (reductions within
+      `jit_compile=True` are now deterministic).
+    * XLA:GPU works with Horovod (OSS contribution by Trent Lo from NVidia)
 *   `tf.saved_model.save`:
     *   When saving a model, not specifying a namespace whitelist for custom
         ops with a namespace will now default to allowing rather than rejecting
@@ -259,6 +371,16 @@ This release contains contributions from many people at Google, as well as:
             coming soon.
         *   Old Converter (TOCO) is getting removed from next release. It's been
             deprecated for few releases already.
+    *   lite.experimental.authoring.compatible API:
+        *   A Python decorator to provide a way to check TFLite compatibility
+            issue of `tf.function`. This returns a callable object which
+            validates TFLite compatibility. If an incompatible operation is
+            encountered during execution, an exception will be raised with
+            information about the incompatible ops.
+    *   lite.experimental.Analyzer API:
+        *   An experimental tool to analyze TFLite flatbuffer models. This API
+            can be used to investigate TFLite model structure and check
+            compatibility with GPU delegate.
 
 *   `tf.saved_model`:
 
@@ -3652,7 +3774,7 @@ Coinciding with this change, new releases of [TensorFlow's Docker images](https:
   * Support added for global sync `BatchNormalization` by using the newly added `tf.keras.layers.experimental.SyncBatchNormalization` layer. This layer will sync `BatchNormalization` statistics every step across all replicas taking part in sync training.
   * Performance improvements for GPU multi-worker distributed training using `tf.distribute.experimental.MultiWorkerMirroredStrategy`
     * Update NVIDIA `NCCL` to `2.5.7-1` for better performance and performance tuning. Please see [nccl developer guide](https://docs.nvidia.com/deeplearning/sdk/nccl-developer-guide/docs/env.html) for more information on this.
-    * Support gradient `allreduce` in `float16`. See this [example](https://github.com/tensorflow/models/blob/master/official/staging/training/grad_utils.py) usage.
+    * Support gradient `allreduce` in `float16`. See this [example](https://github.com/tensorflow/models/blob/master/official/modeling/grad_utils.py) usage.
     * Experimental support of [all reduce gradient packing](https://www.tensorflow.org/api_docs/python/tf/distribute/experimental/CollectiveHints) to allow overlapping gradient aggregation with backward path computation.
     * Deprecated `experimental_run_v2` method for distribution strategies and renamed the method `run` as it is no longer experimental.
     * Add CompositeTensor support for DistributedIterators. This should help prevent unnecessary function retracing and memory leaks.

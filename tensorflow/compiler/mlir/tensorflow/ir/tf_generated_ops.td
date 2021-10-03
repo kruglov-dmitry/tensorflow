@@ -2384,7 +2384,8 @@ Sets up the centralized structures for a distributed TPU system.
     DefaultValuedAttr<StrAttr, "">:$tpu_embedding_config,
     DefaultValuedAttr<BoolAttr, "false">:$is_global_init,
     DefaultValuedAttr<BoolAttr, "false">:$enable_whole_mesh_compilations,
-    DefaultValuedAttr<BoolAttr, "true">:$compilation_failure_closes_chips
+    DefaultValuedAttr<BoolAttr, "true">:$compilation_failure_closes_chips,
+    DefaultValuedAttr<I64Attr, "0">:$tpu_cancellation_closes_chips
   );
 
   let results = (outs
@@ -5272,6 +5273,8 @@ raising an error.
 
   TF_DerivedOperandTypeAttr Tindices = TF_DerivedOperandTypeAttr<1>;
   TF_DerivedOperandTypeAttr Tparams = TF_DerivedOperandTypeAttr<0>;
+
+  let hasCanonicalizer = 1;
 }
 
 def TF_GatherNdOp : TF_Op<"GatherNd", [NoSideEffect]> {
@@ -10226,6 +10229,37 @@ elements from `input_dataset` in parallel.}]>:$num_parallel_calls,
     Confined<TF_ShapeAttrArray, [ArrayMinCount<1>]>:$output_shapes,
     DefaultValuedAttr<BoolAttr, "true">:$use_inter_op_parallelism,
     DefaultValuedAttr<BoolAttr, "false">:$sloppy,
+    DefaultValuedAttr<BoolAttr, "false">:$preserve_cardinality
+  );
+
+  let results = (outs
+    TF_VariantTensor:$handle
+  );
+
+  TF_DerivedOperandTypeListAttr Targuments = TF_DerivedOperandTypeListAttr<1>;
+}
+
+def TF_ParallelMapDatasetV2Op : TF_Op<"ParallelMapDatasetV2", [NoSideEffect]> {
+  let summary = [{
+Creates a dataset that applies `f` to the outputs of `input_dataset`.
+  }];
+
+  let description = [{
+Unlike a "MapDataset", which applies `f` sequentially, this dataset invokes up
+to `num_parallel_calls` copies of `f` in parallel.
+  }];
+
+  let arguments = (ins
+    TF_VariantTensor:$input_dataset,
+    Variadic<TF_Tensor>:$other_arguments,
+    Arg<TF_Int64Tensor, [{The number of concurrent invocations of `f` that process
+elements from `input_dataset` in parallel.}]>:$num_parallel_calls,
+
+    SymbolRefAttr:$f,
+    Confined<TypeArrayAttr, [ArrayMinCount<1>]>:$output_types,
+    Confined<TF_ShapeAttrArray, [ArrayMinCount<1>]>:$output_shapes,
+    DefaultValuedAttr<BoolAttr, "true">:$use_inter_op_parallelism,
+    DefaultValuedAttr<StrAttr, "default">:$deterministic,
     DefaultValuedAttr<BoolAttr, "false">:$preserve_cardinality
   );
 
@@ -18085,7 +18119,8 @@ Creates a dataset that emits each dim-0 slice of `components` once.
   let arguments = (ins
     Variadic<TF_Tensor>:$components,
 
-    Confined<TF_ShapeAttrArray, [ArrayMinCount<1>]>:$output_shapes
+    Confined<TF_ShapeAttrArray, [ArrayMinCount<1>]>:$output_shapes,
+    DefaultValuedAttr<BoolAttr, "false">:$is_files
   );
 
   let results = (outs
@@ -18952,6 +18987,27 @@ def TF_XdivyOp : TF_Op<"Xdivy", [NoSideEffect, ResultsBroadcastableShape, TF_Sam
   let hasCanonicalizer = 1;
 }
 
+def TF_XlaAllReduceOp : TF_Op<"XlaAllReduce", [NoSideEffect]> {
+  let summary = "Wraps the XLA AllReduce operator";
+
+  let description = [{
+documented at https://www.tensorflow.org/xla/operation_semantics#allreduce.
+  }];
+
+  let arguments = (ins
+    Arg<TensorOf<[TF_Bfloat16, TF_Float16, TF_Float32, TF_Int32, TF_Uint32]>, [{Array or a non-empty tuple of arrays to reduce across replicas.}]>:$input,
+    Arg<TF_Int32Tensor, [{Groups between which the reductions are performed.}]>:$group_assignment,
+
+    TF_AnyStrAttrOf<["Min", "Max", "Mul", "Add", "Mean"]>:$reduce_op
+  );
+
+  let results = (outs
+    TensorOf<[TF_Bfloat16, TF_Float16, TF_Float32, TF_Int32, TF_Uint32]>:$output
+  );
+
+  TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<0>;
+}
+
 def TF_XlaBroadcastHelperOp : TF_Op<"XlaBroadcastHelper", [DeclareOpInterfaceMethods<InferTypeOpInterface>, NoSideEffect]> {
   let summary = "Helper operator for performing XLA-style broadcasts";
 
@@ -19307,6 +19363,28 @@ https://www.tensorflow.org/performance/xla/operation_semantics#reduce .
 
   let results = (outs
     TensorOf<[TF_Bfloat16, TF_Bool, TF_Complex128, TF_Complex64, TF_Float16, TF_Float32, TF_Float64, TF_Int16, TF_Int32, TF_Int64, TF_Int8, TF_Qint32, TF_Qint8, TF_Quint8, TF_Uint16, TF_Uint32, TF_Uint64, TF_Uint8]>:$output
+  );
+
+  TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<0>;
+}
+
+def TF_XlaReduceScatterOp : TF_Op<"XlaReduceScatter", [NoSideEffect]> {
+  let summary = "Wraps the XLA ReduceScatter operator";
+
+  let description = [{
+documented at https://www.tensorflow.org/xla/operation_semantics#reducescatter.
+  }];
+
+  let arguments = (ins
+    Arg<TensorOf<[TF_Bfloat16, TF_Float16, TF_Float32, TF_Int32, TF_Uint32]>, [{Array or a non-empty tuple of arrays to reduce across replicas.}]>:$input,
+    Arg<TF_Int32Tensor, [{Groups between which the reductions are performed.}]>:$group_assignment,
+    Arg<TF_Int32Tensor, [{Dimension to scatter.}]>:$scatter_dimension,
+
+    TF_AnyStrAttrOf<["Min", "Max", "Mul", "Add", "Mean"]>:$reduce_op
+  );
+
+  let results = (outs
+    TensorOf<[TF_Bfloat16, TF_Float16, TF_Float32, TF_Int32, TF_Uint32]>:$output
   );
 
   TF_DerivedOperandTypeAttr T = TF_DerivedOperandTypeAttr<0>;

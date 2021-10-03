@@ -30,7 +30,6 @@ limitations under the License.
 #include "tensorflow/core/util/determinism.h"
 #include "tensorflow/core/util/env_var.h"
 #include "tensorflow/core/util/proto/proto_utils.h"
-#include "tensorflow/stream_executor/gpu/gpu_asm_opts.h"
 #include "tensorflow/stream_executor/kernel_spec.h"
 
 namespace xla {
@@ -60,6 +59,25 @@ int64_t FindMissingDnum(absl::Span<const int64_t> vals) {
     }
   }
   return vals.size();
+}
+
+// Returns a mutex that can be used to lock the given stream executor.
+tensorflow::mutex& GetGpuMutex(const se::StreamExecutor* stream_exec) {
+  static tensorflow::mutex mu(tensorflow::LINKER_INITIALIZED);
+  // se::Platform*s are global singletons guaranteed to live forever.
+  static auto* mutexes =
+      new std::map<std::pair<const se::Platform*, /*device_ordinal*/ int64_t>,
+                   tensorflow::mutex>();
+
+  tensorflow::mutex_lock global_lock(mu);
+  auto it = mutexes
+                ->emplace(std::piecewise_construct,
+                          std::make_tuple(stream_exec->platform(),
+                                          stream_exec->device_ordinal()),
+                          std::make_tuple())
+                .first;
+
+  return it->second;
 }
 
 }  // anonymous namespace
@@ -311,20 +329,14 @@ FindVectorizedFeatureDims(const ConvolutionDimensionNumbers& dnums,
 }
 
 tensorflow::mutex_lock LockGpu(const se::StreamExecutor* stream_exec) {
-  static tensorflow::mutex mu(tensorflow::LINKER_INITIALIZED);
-  // se::Platform*s are global singletons guaranteed to live forever.
-  static auto* mutexes =
-      new std::map<std::pair<const se::Platform*, /*device_ordinal*/ int64_t>,
-                   tensorflow::mutex>();
+  tensorflow::mutex& mu = GetGpuMutex(stream_exec);
+  return tensorflow::mutex_lock{mu};
+}
 
-  tensorflow::mutex_lock global_lock(mu);
-  auto it = mutexes
-                ->emplace(std::piecewise_construct,
-                          std::make_tuple(stream_exec->platform(),
-                                          stream_exec->device_ordinal()),
-                          std::make_tuple())
-                .first;
-  return tensorflow::mutex_lock{it->second};
+tensorflow::tf_shared_lock LockGpuShared(
+    const se::StreamExecutor* stream_exec) {
+  tensorflow::mutex& mu = GetGpuMutex(stream_exec);
+  return tensorflow::tf_shared_lock{mu};
 }
 
 StatusOr<std::unique_ptr<se::KernelBase>> CreateKernel(
@@ -357,16 +369,6 @@ Status ExecuteKernelOnStream(const se::KernelBase& kernel,
       stream, se::ThreadDim(thread_counts.x, thread_counts.y, thread_counts.z),
       se::BlockDim(block_counts.x, block_counts.y, block_counts.z), kernel,
       *kernel_args);
-}
-
-se::GpuAsmOpts PtxOptsFromConfig(const HloModuleConfig& hlo_module_config) {
-  string extra_string =
-      hlo_module_config.debug_options().xla_gpu_asm_extra_flags();
-  std::vector<std::string> extra_flags;
-  extra_flags = absl::StrSplit(extra_string, ',', absl::SkipEmpty());
-  return se::GpuAsmOpts(
-      hlo_module_config.debug_options().xla_gpu_disable_gpuasm_optimizations(),
-      hlo_module_config.debug_options().xla_gpu_cuda_data_dir(), extra_flags);
 }
 
 // Unimplemented for integers yet.
@@ -471,6 +473,8 @@ StatusOr<se::dnn::ConvolutionKind> GetDNNConvKindFromCudnnConvKind(
       return se::dnn::BACKWARD_DATA;
     case CudnnConvKind::kForward:
       return se::dnn::FORWARD;
+    case CudnnConvKind::kForwardActivation:
+      return se::dnn::FORWARD_BIAS_ACTIVATION;
     default:
       break;
   }

@@ -20,10 +20,10 @@ limitations under the License.
 #include <vector>
 
 #include "absl/base/call_once.h"
-#include "tensorflow/core/common_runtime/metrics.h"
 #include "tensorflow/core/example/example.pb.h"
 #include "tensorflow/core/example/feature.pb.h"
 #include "tensorflow/core/framework/common_shape_fns.h"
+#include "tensorflow/core/framework/metrics.h"
 #include "tensorflow/core/framework/numeric_op.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/lib/core/errors.h"
@@ -1218,7 +1218,7 @@ class DecodeJSONExampleOp : public OpKernel {
           resolver_.get(), "type.googleapis.com/tensorflow.Example", &in, &out);
       OP_REQUIRES(ctx, status.ok(),
                   errors::InvalidArgument("Error while parsing JSON: ",
-                                          string(status.error_message())));
+                                          string(status.message())));
     }
   }
 

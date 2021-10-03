@@ -52,6 +52,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/python/py_executable.h"
 #include "tensorflow/compiler/xla/python/py_values.h"
 #include "tensorflow/compiler/xla/python/python_ref_manager.h"
+#include "tensorflow/compiler/xla/python/python_utils.h"
 #include "tensorflow/compiler/xla/python/pytree.h"
 #include "tensorflow/compiler/xla/python/types.h"
 #include "tensorflow/compiler/xla/shape_util.h"
@@ -138,14 +139,14 @@ bool CallSignature::operator==(const CallSignature& other) const {
          std::equal(
              static_args.begin(), static_args.end(), other.static_args.begin(),
              other.static_args.end(),
-             [](const py::object& a, const py::object& b) {
+             [this](const py::object& a, const py::object& b) {
                try {
                  return a.equal(b);
                } catch (const py::error_already_set& e) {
                  throw std::invalid_argument(absl::StrCat(
                      "static arguments should be comparable using __eq__."
-                     "The following error was raised when comparing two "
-                     "objects of types ",
+                     "The following error was raised during a call to '",
+                     function_name, "' when comparing two objects of types ",
                      py::cast<std::string>(py::str(py::type::of(a))), " and ",
                      py::cast<std::string>(py::str(py::type::of(b))),
                      ". The error was:\n", e.what()));
@@ -175,7 +176,8 @@ H AbslHashValue(H h, const CallSignature& s) {
     } catch (const py::error_already_set& e) {
       throw std::invalid_argument(absl::StrCat(
           "Non-hashable static arguments are not supported. An error occured "
-          "while trying to hash an object of type ",
+          "during a call to '",
+          s.function_name, "' while trying to hash an object of type ",
           py::cast<std::string>(py::str(py::type::of(static_arg))), ", ",
           py::cast<std::string>(py::str(static_arg)), ". The error was:\n",
           e.what(), "\n"));
@@ -422,10 +424,10 @@ class CompiledFunction {
   ~CompiledFunction();
 
   // pybind11::object typed subclass for CompiledFunction objects.
-  class pyobject : public pybind11::object {
+  class pyobject : public py::object {
    public:
     PYBIND11_OBJECT(pyobject,  // NOLINT
-                    pybind11::object, CompiledFunction::IsCompiledFunction);
+                    py::object, CompiledFunction::IsCompiledFunction);
     pyobject() = default;
     CompiledFunction* func() const {
       return CompiledFunction::AsCompiledFunctionUnchecked(*this);
@@ -436,9 +438,9 @@ class CompiledFunction {
   using object = pyobject;
 
   // Returns true if `h` is a CompiledFunction.
-  static bool IsCompiledFunction(pybind11::handle handle);
+  static bool IsCompiledFunction(py::handle handle);
   // Converts `handle` to a CompiledFunction*. Does not do any checking.
-  static CompiledFunction* AsCompiledFunctionUnchecked(pybind11::handle handle);
+  static CompiledFunction* AsCompiledFunctionUnchecked(py::handle handle);
 
   // This function will:
   // (a) flatten the inputs using pytree
@@ -803,6 +805,7 @@ xla::StatusOr<py::object> CompiledFunction::Call(
   }
 
   ParsedArgumentsAsBuffers arguments;
+  arguments.signature.function_name = function_name_;
   xla::Status status = ParseArguments(args, kwargs, static_argnums_,
                                       static_argnames_, arguments);
   if (!status.ok()) {
@@ -844,7 +847,7 @@ xla::StatusOr<py::object> CompiledFunction::Call(
       try {
         // Calls Python and may release the GIL. May also throw if
         // compilation/tracing fails.
-        out_and_fastpath_data = out_and_fastpath_data =
+        out_and_fastpath_data =
             cache_miss_(*py::reinterpret_borrow<py::args>(args),
                         **kwargs.value_or(py::kwargs()));
         out_tuple = py::cast<py::tuple>(out_and_fastpath_data);
@@ -1121,14 +1124,6 @@ py::object MakeCompiledFunction(py::function fun, py::function cache_miss,
   return obj;
 }
 
-// Helpers for building Python properties
-template <typename Func>
-py::object property_readonly(Func&& get) {
-  py::handle property(reinterpret_cast<PyObject*>(&PyProperty_Type));
-  return property(py::cpp_function(std::forward<Func>(get)), py::none(),
-                  py::none(), "");
-}
-
 // Version numbers for the pickled representations of
 // CompiledFunction/CompiledFunctionCache. Increment these if changing them.
 const int kCompiledFunctionCachePickleVersion = 1;
@@ -1244,7 +1239,9 @@ void BuildJaxjitSubmodule(py::module& m) {
         int version = py::cast<int>(pickle["version"]);
         if (version != kCompiledFunctionPickleVersion) {
           throw std::invalid_argument(absl::StrFormat(
-              "Invalid CompiledFunction pickle version, got %d, expected %d",
+              "Invalid CompiledFunction pickle version, got %d, expected %d. "
+              "Pickling/Unpickling jitted functions using different JAX "
+              "versions is not supported.",
               version, kCompiledFunctionPickleVersion));
         }
         py::function fun = py::cast<py::function>(pickle["fun"]);

@@ -194,9 +194,9 @@ class RnnStateTensorDescriptor {
 class ConvolveExecutionPlan {
  public:
   virtual ~ConvolveExecutionPlan() {}
-  virtual std::string getTag() { return "unknown"; }
-  virtual void* get_raw_desc() { return nullptr; }
-  virtual int64_t getWorkspaceSize() { return -1; }
+  virtual std::string getTag() const { return "unknown"; }
+  virtual void* get_raw_desc() const { return nullptr; }
+  virtual int64_t getWorkspaceSize() const { return -1; }
 };
 
 // Returns a string representation of the given quantization mode.
@@ -926,11 +926,16 @@ class AlgorithmConfig {
     return !(*this == other);
   }
   std::string ToString() const;
-  void set_plan(std::unique_ptr<dnn::ConvolveExecutionPlan>& plan) {
+  void set_plan(std::shared_ptr<const dnn::ConvolveExecutionPlan> plan) {
     plan_ = std::move(plan);
   }
-  void set_plan_no_scratch(std::unique_ptr<dnn::ConvolveExecutionPlan>& plan) {
+  const dnn::ConvolveExecutionPlan* get_plan() const { return plan_.get(); }
+  void set_plan_no_scratch(
+      std::shared_ptr<const dnn::ConvolveExecutionPlan> plan) {
     plan_no_scratch_ = std::move(plan);
+  }
+  const dnn::ConvolveExecutionPlan* get_plan_no_scratch() const {
+    return plan_no_scratch_.get();
   }
 
   // TODO(ruochengw): After cl/380702564, add support for algorithm configs with
@@ -1179,11 +1184,13 @@ class DnnSupport {
   virtual bool DoBatchNormalizationBackward(
       Stream* stream, const DeviceMemory<float>& y_backprop,
       const DeviceMemory<float>& x, const DeviceMemory<float>& scale,
-      const DeviceMemory<float>& mean, const DeviceMemory<float>& inv_var,
+      const DeviceMemory<float>& offset, const DeviceMemory<float>& mean,
+      const DeviceMemory<float>& inv_var, const DeviceMemory<float>& y,
       const dnn::BatchDescriptor& x_desc,
       const dnn::BatchDescriptor& scale_offset_desc, const double epsilon,
-      DeviceMemory<float>* x_backprop, DeviceMemory<float>* scale_backprop,
-      DeviceMemory<float>* offset_backprop,
+      dnn::ActivationMode activation_mode, DeviceMemory<float>* x_backprop,
+      DeviceMemory<float>* scale_backprop, DeviceMemory<float>* offset_backprop,
+      DeviceMemory<float>* side_input_backprop,
       DeviceMemory<uint8>* reserve_space_data,
       ScratchAllocator* workspace_allocator) {
     return false;
@@ -1195,11 +1202,14 @@ class DnnSupport {
   virtual bool DoBatchNormalizationBackward(
       Stream* stream, const DeviceMemory<Eigen::half>& y_backprop,
       const DeviceMemory<Eigen::half>& x, const DeviceMemory<float>& scale,
-      const DeviceMemory<float>& mean, const DeviceMemory<float>& inv_var,
+      const DeviceMemory<float>& offset, const DeviceMemory<float>& mean,
+      const DeviceMemory<float>& inv_var, const DeviceMemory<Eigen::half>& y,
       const dnn::BatchDescriptor& x_desc,
       const dnn::BatchDescriptor& scale_offset_desc, const double epsilon,
+      dnn::ActivationMode activation_mode,
       DeviceMemory<Eigen::half>* x_backprop,
       DeviceMemory<float>* scale_backprop, DeviceMemory<float>* offset_backprop,
+      DeviceMemory<Eigen::half>* side_input_backprop,
       DeviceMemory<uint8>* reserve_space_data,
       ScratchAllocator* workspace_allocator) {
     return false;

@@ -24,7 +24,7 @@ include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir-hlo/Dialect/mhlo/IR/hlo_ops_base.td"
 include "mlir-hlo/Dialect/mhlo/IR/hlo_utils.td"
-include "mlir-hlo/Dialect/mhlo/IR/infer_fusibility_op_interface.td"
+include "mlir-hlo/Dialect/mhlo/IR/infer_shape_equality_op_interface.td"
 
 class HLO_Op<string mnemonic, list<OpTrait> traits> :
     Op<HLO_Dialect, mnemonic, traits> {
@@ -123,7 +123,7 @@ def HLO_CreateTokenOp : HLO_Op<"create_token", [NoSideEffect]> {
 
 class HLO_UnaryElementwiseOp<string mnemonic, list<OpTrait> traits,
     Type TensorType> : HLO_Op<mnemonic, traits # [Elementwise,
-    InferShapedTypeOpInterface, InferFusibilityOpInterface,
+    InferShapedTypeOpInterface, InferShapeEqualityOpInterface,
     SameOperandsAndResultShape]> {
   let arguments = (ins TensorType:$operand);
   let results = (outs TensorType);
@@ -143,9 +143,6 @@ class HLO_UnaryElementwiseOp<string mnemonic, list<OpTrait> traits,
     }
     bool inferInputOutputShapeEquality(int input, int output) {
       return true;
-    }
-    llvm::Optional<Value> inferEffectiveWorkloadShape() {
-      return getOperation()->getResult(0);
     }
   }];
 }
@@ -438,7 +435,7 @@ def HLO_TanhOp: HLO_UnaryElementwiseOp<"tanh",
 
 class HLO_BinaryElementwiseOp<string mnemonic, list<OpTrait> traits> :
     HLO_Op<mnemonic, traits # [InferShapedTypeOpInterface,
-    InferFusibilityOpInterface, SameOperandsAndResultShape, Elementwise]> {
+    InferShapeEqualityOpInterface, SameOperandsAndResultShape, Elementwise]> {
   let arguments = (ins
     HLO_Tensor:$lhs,
     HLO_Tensor:$rhs
@@ -463,9 +460,6 @@ class HLO_BinaryElementwiseOp<string mnemonic, list<OpTrait> traits> :
     }
     bool inferInputOutputShapeEquality(int input, int output) {
       return true;
-    }
-    llvm::Optional<Value> inferEffectiveWorkloadShape() {
-      return getOperation()->getResult(0);
     }
   }];
 
@@ -984,7 +978,7 @@ def HLO_ReduceOp: HLO_ShapedInterfaceOp<"reduce", [
       RecursiveSideEffects,
       SameVariadicOperandSize,
       SingleBlockImplicitTerminator<"ReturnOp">,
-      InferFusibilityOpInterface
+      InferShapeEqualityOpInterface
     ]> {
   let summary = "Reduce operator";
   let description = [{
@@ -994,25 +988,16 @@ def HLO_ReduceOp: HLO_ShapedInterfaceOp<"reduce", [
     See https://www.tensorflow.org/xla/operation_semantics#reduce.
   }];
   let arguments = (ins
-    Variadic<HLO_TensorOrTuple>:$inputs,
-    Variadic<HLO_TensorOrTuple>:$init_values,
+    Variadic<HLO_Tensor>:$inputs,
+    Variadic<HLO_Tensor>:$init_values,
     I64ElementsAttr:$dimensions
   );
 
-  let results = (outs Variadic<HLO_TensorOrTuple>);
+  let results = (outs Variadic<HLO_Tensor>);
 
   let builders = [
     OpBuilder<(ins "ValueRange":$inputs, "ValueRange":$init_values,
       "DenseIntElementsAttr":$dimensions)>];
-
-  let extraClassDeclaration = [{
-    bool isFusibleWithConsumer() {
-      return false;
-    }
-    llvm::Optional<Value> inferEffectiveWorkloadShape() {
-      return getOperation()->getOperand(0);
-    }
-  }];
 
   let hasFolder = 1;
   let hasCanonicalizer = 1;
@@ -1225,7 +1210,7 @@ def HLO_BatchNormTrainingOp : HLO_Op<"batch_norm_training", [NoSideEffect]> {
 }
 
 def HLO_BitcastConvertOp : HLO_Op<"bitcast_convert",
-    [NoSideEffect, SameOperandsAndResultShape]> {
+    [NoSideEffect]> {
   let summary = "BitcastConvert operator";
   let description = [{
     Similar to a 'tf.bitcast' in TensorFlow, performs an element-wise bitcast
@@ -1444,7 +1429,7 @@ def HLO_ConvOp : HLO_Op<"convolution", [NoSideEffect]> {
   code extraClassDeclaration = [{
     bool hasWindowReversal() {
       auto reversal = window_reversalAttr();
-      return reversal && llvm::any_of(reversal.getBoolValues(),
+      return reversal && llvm::any_of(reversal.getValues<bool>(),
                                       [](bool v) { return v; });
     }
   }];
@@ -1616,7 +1601,15 @@ def HLO_FftOp: HLO_Op<"fft", [NoSideEffect]> {
   let results = (outs HLO_Tensor);
 }
 
-def HLO_GatherOp: HLO_ShapedInterfaceOp<"gather", [NoSideEffect]> {
+def HLO_GatherOp: HLO_Op<"gather", [InferTensorTypeWithReify, NoSideEffect]> {
+  let summary = "Gather operator";
+  let description = [{
+    Stitches together several slices of `operand` from offsets specified in
+    `start_indices` (each slice at a potentially different runtime offset).
+
+    See https://www.tensorflow.org/xla/operation_semantics#gather.
+  }];
+
   let arguments = (ins
     HLO_Tensor:$operand,
     HLO_IntTensor:$start_indices,
@@ -1628,6 +1621,12 @@ def HLO_GatherOp: HLO_ShapedInterfaceOp<"gather", [NoSideEffect]> {
   let results = (outs HLO_Tensor);
 
   let hasCanonicalizer = 1;
+
+  let extraClassDeclaration = [{
+    static bool isCompatibleReturnTypes(TypeRange l, TypeRange r) {
+      return succeeded(mlir::verifyCompatibleShapes(l, r));
+    }
+  }];
 }
 
 def HLO_GetDimensionSizeOp: HLO_Op<"get_dimension_size", [NoSideEffect]> {
@@ -2048,7 +2047,7 @@ def HLO_TorchIndexSelectOp : HLO_Op<"torch_index_select", [NoSideEffect]> {
 //===----------------------------------------------------------------------===//
 
 def HLO_RngUniformOp : HLO_Op<"rng_uniform",
-      InferTensorType<["inferReturnTypeComponents"]>.traits> {
+      [InferTensorType<["inferReturnTypeComponents"]>]> {
   let summary = "RNG with uniform distribution.";
   let description = [{
     Constructs an output of a given shape with random numbers generated
@@ -2077,7 +2076,7 @@ def HLO_RngUniformOp : HLO_Op<"rng_uniform",
 }
 
 def HLO_RngNormalOp : HLO_Op<"rng_normal",
-      InferTensorType<["inferReturnTypeComponents"]>.traits> {
+      [InferTensorType<["inferReturnTypeComponents"]>]> {
   let summary = "RNG with normal distribution.";
   let description = [{
     Constructs an output of a given shape with random numbers generated
@@ -2268,11 +2267,12 @@ def HLO_DynamicPadOp: HLO_ShapedInterfaceOp<"dynamic_pad",
   let hasCustomHLOConverter = 1;
 }
 
-def HLO_DynamicGatherOp: HLO_ShapedInterfaceOp<"dynamic_gather", [NoSideEffect]> {
+def HLO_DynamicGatherOp: HLO_Op<"dynamic_gather",
+                                [InferTensorTypeWithReify, NoSideEffect]> {
   string summary = "Dynamic Gather operator";
   string description = [{
-    The dynamic shape version of GatherOp. Stitches together several slices of an input
-    array. slice_sizes is a compile-time variable.
+    The dynamic shape version of GatherOp. Stitches together several slices of
+    an input array.
   }];
 
   let arguments = (ins
@@ -2285,6 +2285,12 @@ def HLO_DynamicGatherOp: HLO_ShapedInterfaceOp<"dynamic_gather", [NoSideEffect]>
   let results = (outs HLO_Tensor);
 
   let hasCustomHLOConverter = 1;
+
+  let extraClassDeclaration = [{
+    static bool isCompatibleReturnTypes(TypeRange l, TypeRange r) {
+      return succeeded(mlir::verifyCompatibleShapes(l, r));
+    }
+  }];
 }
 
 def HLO_DynamicConvOp : HLO_Op<"dynamic_conv", [NoSideEffect]>, BASE_HLO_ConvOp {

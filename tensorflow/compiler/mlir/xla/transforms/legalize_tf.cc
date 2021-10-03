@@ -27,10 +27,8 @@ limitations under the License.
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Sequence.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/FormatVariadic.h"
 #include "mlir/Dialect/Shape/IR/Shape.h"  // from @llvm-project
 #include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
 #include "mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
@@ -48,18 +46,14 @@ limitations under the License.
 #include "mlir/IR/Types.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
-#include "mlir/Transforms/DialectConversion.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/chlo_ops.h"
 #include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
 #include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/hlo_ops_base_structs.h"
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/transforms/rewriters.h"
 #include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/utils/convert_op_folder.h"
 #include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/utils/hlo_utils.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
-#include "tensorflow/compiler/mlir/tensorflow/transforms/lower_tf.h"
 #include "tensorflow/compiler/mlir/xla/attribute_importer.h"
 #include "tensorflow/compiler/mlir/xla/transforms/passes.h"
-#include "tensorflow/compiler/mlir/xla/transforms/xla_legalize_tf_passes_detail.h"
 #include "tensorflow/compiler/mlir/xla/type_to_shape.h"
 #include "tensorflow/compiler/xla/client/lib/conv_grad_size_util.h"
 #include "tensorflow/compiler/xla/client/padding.h"
@@ -68,33 +62,14 @@ limitations under the License.
 #include "tensorflow/core/framework/kernel_shape_util.h"
 #include "tensorflow/core/kernels/conv_grad_shape_utils.h"
 #include "tensorflow/core/platform/bfloat16.h"
-#include "tensorflow/core/tpu/tpu_api.h"
 #include "tensorflow/core/util/padding.h"
 #include "tensorflow/core/util/tensor_format.h"
-#include "tensorflow/stream_executor/tpu/c_api_conversions.h"
 
 namespace mlir {
 namespace mhlo {
 namespace {
 
 constexpr char kShardingAttr[] = "mhlo.sharding";
-
-class LegalizeTF : public LegalizeTFBase<LegalizeTF> {
- public:
-  explicit LegalizeTF(bool allow_partial_conversion, bool legalize_chlo,
-                      llvm::Optional<StringRef> tf2xla_fallback_device_type,
-                      bool prefer_tf2xla) {
-    allow_partial_conversion_ = allow_partial_conversion;
-    legalize_chlo_ = legalize_chlo;
-    prefer_tf2xla_ = prefer_tf2xla;
-    use_tf2xla_fallback_ = tf2xla_fallback_device_type.hasValue();
-    if (tf2xla_fallback_device_type.hasValue()) {
-      device_type_ = tf2xla_fallback_device_type.getValue().str();
-    }
-  }
-  /// Performs the lowering to XLA dialect.
-  void runOnFunction() override;
-};
 
 /// Returns the feature dimension for the given format and input type.
 static size_t GetFeatureDimension(tensorflow::TensorFormat format,
@@ -489,20 +464,18 @@ static Value BroadcastToShapeOf(Location loc, Value input, Value broadcast_to,
 Value BatchDot(Location loc, Value lhs, bool transpose_lhs, Value rhs,
                bool transpose_rhs, int64_t num_batch_dims,
                ArrayAttr precision_config, OpBuilder *builder) {
-  auto batch_dimensions = GetI64ElementsAttr(
-      llvm::to_vector<4>(llvm::seq<int64_t>(0, num_batch_dims)), builder);
-  auto lhs_contracting_dimensions = GetI64ElementsAttr(
-      llvm::makeArrayRef({transpose_lhs ? num_batch_dims : num_batch_dims + 1}),
-      builder);
-  auto rhs_contracting_dimensions = GetI64ElementsAttr(
-      llvm::makeArrayRef({transpose_rhs ? num_batch_dims + 1 : num_batch_dims}),
-      builder);
-  auto dimension_numbers = DotDimensionNumbers::get(
+  auto batch_dimensions =
+      llvm::to_vector<4>(llvm::seq<int64_t>(0, num_batch_dims));
+  auto lhs_contracting_dimensions = llvm::to_vector<1>(llvm::makeArrayRef(
+      {transpose_lhs ? num_batch_dims : num_batch_dims + 1}));
+  auto rhs_contracting_dimensions = llvm::to_vector<1>(llvm::makeArrayRef(
+      {transpose_rhs ? num_batch_dims + 1 : num_batch_dims}));
+  auto dimension_numbers = DotDimensionNumbersAttr::get(
+      builder->getContext(),
       /*lhs_batching_dimensions=*/batch_dimensions,
       /*rhs_batching_dimensions=*/batch_dimensions,
       /*lhs_contracting_dimensions=*/lhs_contracting_dimensions,
-      /*rhs_contracting_dimensions=*/rhs_contracting_dimensions,
-      builder->getContext());
+      /*rhs_contracting_dimensions=*/rhs_contracting_dimensions);
   auto lhs_shape = lhs.getType().cast<RankedTensorType>().getShape();
   auto rhs_shape = rhs.getType().cast<RankedTensorType>().getShape();
   auto shape = llvm::to_vector<4>(lhs_shape);
@@ -771,7 +744,7 @@ static DenseIntElementsAttr SliceDenseIntElementsAttrColumn2D(
   llvm::SmallVector<int64_t, 4> values;
   values.reserve(shaped_type.getNumElements() / shape[1]);
 
-  for (auto it : llvm::enumerate(int_attr.getIntValues())) {
+  for (auto it : llvm::enumerate(int_attr.getValues<APInt>())) {
     if (static_cast<int>(it.index() % shape[1]) == column) {
       values.push_back(it.value().getSExtValue());
     }
@@ -1035,7 +1008,8 @@ bool HasValidGatherDims(StringAttr attr) {
   return dims.ParseFromString(attr.getValue().str());
 }
 
-GatherDimensionNumbers GetGatherDimNumsAttr(StringAttr attr, Builder *builder) {
+GatherDimensionNumbersAttr GetGatherDimNumsAttr(StringAttr attr,
+                                                Builder *builder) {
   ::xla::GatherDimensionNumbers dims;
   if (!dims.ParseFromString(attr.getValue().str())) return {};
   return ::xla::ConvertGatherDimensionNumbers(dims, builder);
@@ -1050,7 +1024,7 @@ bool HasValidDotDims(StringAttr attr) {
   return dims.ParseFromString(attr.getValue().str());
 }
 
-DotDimensionNumbers GetDotDimNumsAttr(StringAttr attr, Builder *builder) {
+DotDimensionNumbersAttr GetDotDimNumsAttr(StringAttr attr, Builder *builder) {
   ::xla::DotDimensionNumbers dims;
   if (!dims.ParseFromString(attr.getValue().str())) return {};
   return ::xla::ConvertDotDimensionNumbers(dims, builder);
@@ -1117,8 +1091,9 @@ class ConvertBiasAddOp : public OpRewritePattern<TF::BiasAddOp> {
     if (!FormatFromString(op.data_format().str(), &data_format))
       return op.emitOpError("invalid data format");
 
-    auto feature_dim = GetFeatureDimension(
-        data_format, op.value().getType().cast<RankedTensorType>());
+    auto value_type = op.value().getType().dyn_cast<RankedTensorType>();
+    if (!value_type) return failure();
+    auto feature_dim = GetFeatureDimension(data_format, value_type);
     auto bias_broadcast = Broadcast1DToFeatureDim(loc, op.value(), op.bias(),
                                                   feature_dim, rewriter);
     Value add = rewriter.create<AddOp>(loc, op.value(), bias_broadcast);
@@ -1126,99 +1101,6 @@ class ConvertBiasAddOp : public OpRewritePattern<TF::BiasAddOp> {
       add = rewriter.create<tensor::CastOp>(loc, op.getType(), add);
     }
     rewriter.replaceOp(op, {add});
-    return success();
-  }
-};
-
-// Convert TF::GatherV2Op to mhlo::DynamicGatherOp
-class ConvertGatherV2OpDynamic : public OpRewritePattern<TF::GatherV2Op> {
-  using OpRewritePattern<TF::GatherV2Op>::OpRewritePattern;
-  // TODO(disc): To recover static special case's performance with folding and
-  // canonicalization.
-  LogicalResult matchAndRewrite(TF::GatherV2Op op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    Value params = op.params();
-    // params and indices of GatherNdOp must be ranked
-    auto params_ty = params.getType().dyn_cast<RankedTensorType>();
-    Value indices = op.indices();
-    auto indices_ty = indices.getType().dyn_cast<RankedTensorType>();
-    if (!params_ty || !indices_ty) return failure();
-
-    // TODO(disc): Remove this constraint once fold and canonicalization
-    // implemented.
-    if (params_ty.hasStaticShape() && indices_ty.hasStaticShape())
-      return failure();
-
-    int64_t params_rank = params_ty.getRank();
-    int64_t indices_rank = indices_ty.getRank();
-
-    // axis
-    DenseIntElementsAttr axis_attr;
-    // axis must be const for GatherOp
-    if (!matchPattern(op.axis(), m_Constant(&axis_attr))) return failure();
-
-    int64_t axis = (*axis_attr.begin()).getSExtValue();
-    if (axis < 0) axis += params_rank;
-
-    // slice_sizes
-    SmallVector<int64_t, 4> slice_sizes;
-    slice_sizes.reserve(params_rank);
-    for (int64_t dim_idx = 0; dim_idx < params_rank; ++dim_idx) {
-      if (dim_idx == axis) {
-        slice_sizes.push_back(1);
-      } else {
-        // potentially dynamic
-        int64_t dim_size = params_ty.getDimSize(dim_idx);
-        slice_sizes.push_back(dim_size);
-      }
-    }
-    SmallVector<Value, 4> slice_sizes_vals;
-    for (int64_t dim_idx = 0; dim_idx < params_rank; ++dim_idx) {
-      if (dim_idx == axis) {
-        slice_sizes_vals.push_back(rewriter.create<ConstantOp>(
-            loc, rewriter.getIntegerAttr(indices_ty.getElementType(), 1)));
-      } else {
-        int64_t dim_size = params_ty.getDimSize(dim_idx);
-        if (dim_size != ShapedType::kDynamicSize) {
-          slice_sizes_vals.push_back(rewriter.create<ConstantOp>(
-              loc,
-              rewriter.getIntegerAttr(indices_ty.getElementType(), dim_size)));
-        } else {
-          slice_sizes_vals.push_back(rewriter.create<IndexCastOp>(
-              loc, rewriter.create<tensor::DimOp>(loc, params, dim_idx),
-              indices_ty.getElementType()));
-        }
-      }
-    }
-    Value slice_sizes_value = rewriter.create<tensor::FromElementsOp>(
-        loc, indices_ty.getElementType(), slice_sizes_vals);
-    // offset_dims
-    SmallVector<int64_t, 4> offset_dims;
-    for (int64_t dim_idx = 0; dim_idx < params_rank; dim_idx++) {
-      if (dim_idx < axis) {
-        offset_dims.push_back(dim_idx);
-      } else if (dim_idx >= axis + 1) {
-        offset_dims.push_back(dim_idx + indices_rank - 1);
-      }
-    }
-    // collapsed_slice_dims
-    SmallVector<int64_t, 4> collapsed_slice_dims(1, axis);
-    // start_index_map
-    SmallVector<int64_t, 4> start_index_map(1, axis);
-    // index_vector_dim
-    int64_t index_vector_dim = indices_rank;
-    auto dims_attr = GatherDimensionNumbers::get(
-        /*offset_dims=*/GetI64ElementsAttr(offset_dims, &rewriter),
-        /*collapsed_slice_dims=*/
-        GetI64ElementsAttr(collapsed_slice_dims, &rewriter),
-        /*start_index_map=*/GetI64ElementsAttr(start_index_map, &rewriter),
-        /*index_vector_dim=*/rewriter.getI64IntegerAttr(index_vector_dim),
-        rewriter.getContext());
-
-    rewriter.replaceOpWithNewOp<mhlo::DynamicGatherOp>(
-        op, op.getType(), op.params(), op.indices(), slice_sizes_value,
-        dims_attr);
     return success();
   }
 };
@@ -1728,13 +1610,9 @@ class ConvertGatherNdOpDynamic : public OpRewritePattern<TF::GatherNdOp> {
     // index_vector_dim
     int64_t index_vector_dim = indices_rank - 1;
 
-    auto dims_attr = GatherDimensionNumbers::get(
-        /*offset_dims=*/GetI64ElementsAttr(offset_dims, &rewriter),
-        /*collapsed_slice_dims=*/
-        GetI64ElementsAttr(collapsed_slice_dims, &rewriter),
-        /*start_index_map=*/GetI64ElementsAttr(start_index_map, &rewriter),
-        /*index_vector_dim=*/rewriter.getI64IntegerAttr(index_vector_dim),
-        rewriter.getContext());
+    auto dims_attr = GatherDimensionNumbersAttr::get(
+        rewriter.getContext(), offset_dims, collapsed_slice_dims,
+        start_index_map, index_vector_dim);
     // TODO(disc): Remove this if-statement once fold and canonicalization is
     // implemented.
     if (params_ty.hasStaticShape() && indices_ty.hasStaticShape()) {
@@ -1884,27 +1762,16 @@ class ConvertLeakyReluOp : public OpRewritePattern<TF::LeakyReluOp> {
   LogicalResult matchAndRewrite(TF::LeakyReluOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    float alpha = op.alpha().convertToFloat();
     Value features = op.features();
-    auto featureType = features.getType().cast<RankedTensorType>();
-    ArrayRef<int64_t> featureShape = featureType.getShape();
-    Type eltType = featureType.getElementType();
+    auto featureType = features.getType();
 
-    auto alphaVal = rewriter.create<mhlo::ConstOp>(
-        loc, rewriter.getFloatAttr(eltType, alpha));
-
-    // Broadcast `alpha` to match the shape of feature.
-    auto featureShapeAttr = DenseIntElementsAttr::get(
-        RankedTensorType::get(featureShape.size(), rewriter.getIntegerType(64)),
-        featureShape);
-    auto broadcastAlphaVal = rewriter.create<mhlo::BroadcastOp>(
-        loc, featureType, alphaVal, featureShapeAttr);
-
-    Attribute zeroAttr = rewriter.getZeroAttr(featureType);
-    Value zeroVal = rewriter.create<ConstantOp>(loc, featureType, zeroAttr);
+    // Use ConstantLike for `alpha` to match the shape of feature.
+    auto alphaVal = chlo::getConstantLike(
+        rewriter, loc, op.alpha().convertToFloat(), features);
+    Value zeroVal = chlo::getConstantLike(rewriter, loc, 0.0, features);
 
     Value leakyActivationVal = rewriter.create<mhlo::MulOp>(
-        loc, features.getType(), features, broadcastAlphaVal);
+        loc, features.getType(), features, alphaVal);
 
     StringAttr compare_direction = StringAttr::get(rewriter.getContext(), "GT");
     Value compareGtZero = rewriter.create<mhlo::CompareOp>(
@@ -1925,26 +1792,17 @@ class ConvertLeakyReluGradOp : public OpRewritePattern<TF::LeakyReluGradOp> {
   LogicalResult matchAndRewrite(TF::LeakyReluGradOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    float alpha = op.alpha().convertToFloat();
     Value gradients = op.gradients();
     Value features = op.features();
-    auto featureType = features.getType().cast<RankedTensorType>();
-    ArrayRef<int64_t> featureShape = featureType.getShape();
-    Type eltType = featureType.getElementType();
+    auto featureType = features.getType();
 
-    auto alphaVal = rewriter.create<mhlo::ConstOp>(
-        loc, rewriter.getFloatAttr(eltType, alpha));
-    auto featureShapeAttr = DenseIntElementsAttr::get(
-        RankedTensorType::get(featureShape.size(), rewriter.getIntegerType(64)),
-        featureShape);
-    auto broadcastAlphaVal = rewriter.create<mhlo::BroadcastOp>(
-        loc, featureType, alphaVal, featureShapeAttr);
-
-    Attribute zeroAttr = rewriter.getZeroAttr(featureType);
-    Value zeroVal = rewriter.create<ConstantOp>(loc, featureType, zeroAttr);
+    // Use ConstantLike for `alpha` to match the shape of feature.
+    auto alphaVal = chlo::getConstantLike(
+        rewriter, loc, op.alpha().convertToFloat(), features);
+    Value zeroVal = chlo::getConstantLike(rewriter, loc, 0.0, features);
 
     Value leakyGradientVal = rewriter.create<mhlo::MulOp>(
-        loc, features.getType(), gradients, broadcastAlphaVal);
+        loc, features.getType(), gradients, alphaVal);
 
     StringAttr compare_direction = StringAttr::get(rewriter.getContext(), "GT");
 
@@ -2253,12 +2111,11 @@ class ConvertMatrixDiagPartV3Op
     // Gather the diagonal entries.
     // TODO(kramm): For a single diagonal, this might be slower than the
     //              mask + sum approach. Special-case num_diags==1?
-    auto dims_attr = GatherDimensionNumbers::get(
-        /*offset_dims=*/GetI64ElementsAttrForSeq(0, num_dims - 2, &rewriter),
-        /*collapsed_slice_dims=*/GetI64ElementsAttr(collapsed_dims, &rewriter),
-        /*start_index_map=*/GetI64ElementsAttr(start_index_map, &rewriter),
-        /*index_vector_dim=*/rewriter.getI64IntegerAttr(0),
-        rewriter.getContext());
+    auto dims_attr = GatherDimensionNumbersAttr::get(
+        rewriter.getContext(),
+        /*offset_dims=*/llvm::to_vector<4>(llvm::seq<int64_t>(0, num_dims - 2)),
+        /*collapsed_slice_dims=*/collapsed_dims, start_index_map,
+        /*index_vector_dim=*/0);
     Value gather = rewriter.create<mhlo::GatherOp>(
         loc, output_type, op.input(), start_indices, dims_attr,
         GetI64ElementsAttr(slice_sizes, &rewriter));
@@ -3454,18 +3311,17 @@ class ConvertBatchMatMulV2Op : public OpRewritePattern<TF::BatchMatMulV2Op> {
     rhs_type = rhs.getType().cast<RankedTensorType>();
     assert(lhs_type.getRank() == rhs_type.getRank());
     int64_t rank = lhs_type.getRank();
-    auto batch_dimensions = GetI64ElementsAttr(
-        llvm::to_vector<4>(llvm::seq<int64_t>(0, rank - 2)), &rewriter);
-    auto lhs_contracting_dimensions = GetI64ElementsAttr(
-        llvm::makeArrayRef({op.adj_x() ? rank - 2 : rank - 1}), &rewriter);
-    auto rhs_contracting_dimensions = GetI64ElementsAttr(
-        llvm::makeArrayRef({op.adj_y() ? rank - 1 : rank - 2}), &rewriter);
-    auto dimension_numbers = DotDimensionNumbers::get(
+    auto batch_dimensions = llvm::to_vector<4>(llvm::seq<int64_t>(0, rank - 2));
+    auto lhs_contracting_dimensions = llvm::to_vector<4>(
+        llvm::makeArrayRef({op.adj_x() ? rank - 2 : rank - 1}));
+    auto rhs_contracting_dimensions = llvm::to_vector<4>(
+        llvm::makeArrayRef({op.adj_y() ? rank - 1 : rank - 2}));
+    auto dimension_numbers = DotDimensionNumbersAttr::get(
+        rewriter.getContext(),
         /*lhs_batching_dimensions=*/batch_dimensions,
         /*rhs_batching_dimensions=*/batch_dimensions,
         /*lhs_contracting_dimensions=*/lhs_contracting_dimensions,
-        /*rhs_contracting_dimensions=*/rhs_contracting_dimensions,
-        rewriter.getContext());
+        /*rhs_contracting_dimensions=*/rhs_contracting_dimensions);
     // TODO(silvasean): Emit shape checks for contracting dimensions.
     // (The batch dimensions are checked by the broadcasting logic)
     rewriter.replaceOpWithNewOp<DotGeneralOp>(op, op.getType(), lhs, rhs,
@@ -4663,12 +4519,13 @@ class ConvertTensorScatterOp : public OpRewritePattern<OpTy> {
     int64_t updates_rank = updates_ty.getRank();
 
     int64_t window_dims = tensor_rank - num_index_dims;
-    auto dims_attr = ScatterDimensionNumbers::get(
-        GetI64ElementsAttrForSeq(updates_rank - window_dims, updates_rank,
-                                 &rewriter),
-        GetI64ElementsAttrForSeq(0, num_index_dims, &rewriter),
-        GetI64ElementsAttrForSeq(0, num_index_dims, &rewriter),
-        rewriter.getI64IntegerAttr(indices_rank - 1), rewriter.getContext());
+    auto dims_attr = ScatterDimensionNumbersAttr::get(
+        rewriter.getContext(),
+        llvm::to_vector<4>(
+            llvm::seq<int64_t>(updates_rank - window_dims, updates_rank)),
+        llvm::to_vector<4>(llvm::seq<int64_t>(0, num_index_dims)),
+        llvm::to_vector<4>(llvm::seq<int64_t>(0, num_index_dims)),
+        indices_rank - 1);
 
     Location loc = op.getLoc();
     auto scatter = rewriter.create<ScatterOp>(
@@ -5472,85 +5329,19 @@ class ConvertInfeedDequeueTupleOp
  public:
   using OpRewritePattern::OpRewritePattern;
 
-  FailureOr<std::vector<int64_t>> GetTPUInfeedLayoutFromAPI(
-      RankedTensorType t) const {
-    // Call the TPU API to determine the right infeed layout. Note that
-    // this can fail if we're not running on a TPU-enabled node.
-    // TODO(kramm): Move this into a separate pass. See b/181724526
-    xla::Shape old_shape = xla::TypeToShape(t);
-    XLA_Shape old_shape_c = {};
-    XLA_Shape new_shape_c = {};
-    TfTpu_ExecutorApiFn *executor = tensorflow::tpu::ExecutorApiFn();
-    if (!tensorflow::tpu::IsInitialized(executor)) {
-      return failure();
-    }
-    ApiConverter::ToC(old_shape, &old_shape_c);
-    executor->TpuTransferManager_GetInfeedLayoutFn(&old_shape_c, &new_shape_c);
-    xla::Shape new_shape = ApiConverter::FromC(&new_shape_c);
-    ApiConverter::Free(&old_shape_c);
-    ApiConverter::Free(&new_shape_c);
-
-    xla::Layout layout = new_shape.layout();
-    auto minor_to_major = layout.minor_to_major();
-    return std::vector<int64_t>(minor_to_major.begin(), minor_to_major.end());
-  }
-
-  FailureOr<Attribute> GetLayout(const Type &type,
-                                 PatternRewriter &rewriter) const {
-    auto i64_type = rewriter.getIntegerType(64);
-    if (type.isa<TupleType>()) {
-      TupleType tuple_type = type.dyn_cast<TupleType>();
-      std::vector<mlir::Attribute> v;
-      for (const mlir::Type &t : tuple_type.getTypes()) {
-        auto layout = GetLayout(t, rewriter);
-        if (failed(layout)) return failure();
-        v.push_back(layout.getValue());
-      }
-      ArrayRef<Attribute> shape(v);
-      return rewriter.getArrayAttr(shape);
-    } else if (RankedTensorType t = type.dyn_cast<RankedTensorType>()) {
-      if (!t.hasStaticShape()) return failure();
-      auto layout = GetTPUInfeedLayoutFromAPI(t);
-      std::vector<int64_t> minor_to_major;
-      if (succeeded(layout)) {
-        minor_to_major = layout.getValue();
-      } else {
-        /* If we're not running on a TPU node, we might not be able to
-         * actually call the part of the TPU API that gives us layout.
-         * This happens e.g. for unit tests. Below we just create a reasonable
-         * layout.  We sort by dimension size, which makes the layout agree with
-         * the "correct" TPU layout in surprisingly many cases.
-         * Note that the corresponding InfeedEnqueue op will be generated
-         * through another path, and might still generate an (incompatible)
-         * layout using the TPU API. Running legalize_tf.cc on non-TPU nodes
-         * thus is a potential source of bugs.
-         */
-        minor_to_major.resize(t.getRank());
-        std::iota(minor_to_major.begin(), minor_to_major.end(), 0);
-        std::sort(minor_to_major.begin(), minor_to_major.end(),
-                  [=](int64_t a, int64_t b) {
-                    int da = t.getDimSize(a);
-                    int db = t.getDimSize(b);
-                    return da > db || (da == db && a > b);
-                  });
-      }
-      std::vector<Attribute> elements;
-      for (int64_t i = 0; i < minor_to_major.size(); i++) {
-        elements.push_back(
-            rewriter.getIntegerAttr(i64_type, minor_to_major[i]));
-      }
-      return rewriter.getArrayAttr(elements);
-    } else {
-      return rewriter.getUnitAttr();  // e.g. tokens
-    }
-  }
-
   LogicalResult matchAndRewrite(TF::InfeedDequeueTupleOp op,
                                 PatternRewriter &rewriter) const override {
     std::vector<Type> result_types(op.outputs().size());
     for (auto idx_and_output : llvm::enumerate(op.outputs())) {
       result_types[idx_and_output.index()] = (idx_and_output.value().getType());
     }
+
+    for (Type t : result_types) {
+      if (auto ty = t.dyn_cast<RankedTensorType>()) {
+        if (!ty.hasStaticShape()) return failure();
+      }
+    }
+
     // Infeed takes a single token operand. Generate the token using
     // create_token op to pass to the infeed op.
     auto token = rewriter.create<CreateTokenOp>(
@@ -5563,13 +5354,12 @@ class ConvertInfeedDequeueTupleOp
     auto data_and_token_type = mlir::TupleType::get(
         rewriter.getContext(), {data_tuple_type, token.getType()});
 
-    auto layout = GetLayout(data_and_token_type, rewriter);
-    if (failed(layout)) return failure();
+    ArrayAttr layout;  // filled in during the xla-adjust-layout pass
 
-    auto data_and_token = rewriter.create<InfeedOp>(
-        op.getLoc(), data_and_token_type, token,
-        /*infeed_config=*/rewriter.getStringAttr(""),
-        /*layout=*/layout.getValue().cast<ArrayAttr>());
+    auto data_and_token =
+        rewriter.create<InfeedOp>(op.getLoc(), data_and_token_type, token,
+                                  /*infeed_config=*/rewriter.getStringAttr(""),
+                                  /*layout=*/layout);
 
     if (op._XlaSharding().hasValue()) {
       // _XlaSharding attribute in TF is a serialized string of the OpSharding
@@ -6016,11 +5806,10 @@ class GenericConvertUnsortedSegmentReductionOp : public OpRewritePattern<OpTy> {
     int64_t index_vector_dim = segment_ids_rank;
 
     // Put all parameters in a StructAttr.
-    auto dims_attr = ScatterDimensionNumbers::get(
-        GetI64ElementsAttrForSeq(segment_ids_rank, data_rank, &rewriter),
-        GetI64ElementsAttr(inserted_window_dims, &rewriter),
-        GetI64ElementsAttr(scatter_dims_to_operand_dims, &rewriter),
-        rewriter.getI64IntegerAttr(index_vector_dim), rewriter.getContext());
+    auto dims_attr = ScatterDimensionNumbersAttr::get(
+        rewriter.getContext(),
+        llvm::to_vector<4>(llvm::seq<int64_t>(segment_ids_rank, data_rank)),
+        inserted_window_dims, scatter_dims_to_operand_dims, index_vector_dim);
 
     auto scatter =
         rewriter.create<ScatterOp>(op.getLoc(), op.getType(), broadcasted_init,
@@ -6238,12 +6027,12 @@ class ConvertRandomShuffleOp : public OpRewritePattern<TF::RandomShuffleOp> {
     ArrayRef<int64_t> input_shape = input_type.getShape();
     SmallVector<int64_t, 4> slice_sizes(input_shape.begin(), input_shape.end());
     slice_sizes[0] = 1;
-    auto dims_attr = GatherDimensionNumbers::get(
-        /*offset_dims=*/GetI64ElementsAttrForSeq(1, input_rank, &rewriter),
-        /*collapsed_slice_dims=*/GetI64ElementsAttr({0}, &rewriter),
-        /*start_index_map=*/GetI64ElementsAttr({0}, &rewriter),
-        /*index_vector_dim=*/rewriter.getI64IntegerAttr(1),
-        rewriter.getContext());
+    auto dims_attr = GatherDimensionNumbersAttr::get(
+        rewriter.getContext(),
+        /*offset_dims=*/llvm::to_vector<4>(llvm::seq<int64_t>(1, input_rank)),
+        /*collapsed_slice_dims=*/{0},
+        /*start_index_map=*/{0},
+        /*index_vector_dim=*/1);
     rewriter.replaceOpWithNewOp<mhlo::GatherOp>(
         op, op.getType(), op.value(), swaped_indices, dims_attr,
         GetI64ElementsAttr(slice_sizes, &rewriter));
@@ -6415,6 +6204,72 @@ class ConvertXlaAllReduceOp : public OpRewritePattern<TF::XlaAllReduceOp> {
     // For mean, divide the merge result by group size.
     if (reduce_op == "Mean") {
       int64_t replica_group_size = replica_groups.getType().getDimSize(1);
+      auto divisor = GetScalarConstOfType(element_type, loc, replica_group_size,
+                                          &rewriter);
+      auto broadcast_dims = GetI64ElementsAttr({}, &rewriter);
+      result = rewriter.create<chlo::BroadcastDivOp>(
+          loc, result, divisor.getResult(), broadcast_dims);
+    }
+
+    rewriter.replaceOp(op, {result});
+    return success();
+  }
+};
+
+// Converts a TF XlaReduceScatter op to ReduceScatter HLO.
+class ConvertXlaReduceScatterOp
+    : public OpRewritePattern<TF::XlaReduceScatterOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TF::XlaReduceScatterOp op,
+                                PatternRewriter &rewriter) const override {
+    DenseIntElementsAttr group_assignment;
+    if (!matchPattern(op.group_assignment(), m_Constant(&group_assignment)))
+      return failure();
+    auto replica_groups =
+        hlo::ConvertElementsAttr(group_assignment, rewriter.getIntegerType(64))
+            .cast<DenseIntElementsAttr>();
+    if (replica_groups.getType().getRank() != 2) return failure();
+
+    APInt scatter_dimension;
+    if (!matchPattern(op.scatter_dimension(),
+                      m_ConstantInt(&scatter_dimension)))
+      return failure();
+
+    Location loc = op.getLoc();
+    Type element_type = getElementTypeOrSelf(op.input().getType());
+
+    auto reduce_scatter = rewriter.create<ReduceScatterOp>(
+        loc, op.getType(), op.input(),
+        rewriter.getIntegerAttr(rewriter.getIntegerType(64),
+                                scatter_dimension.getSExtValue()),
+        replica_groups, ChannelHandle());
+    StringRef reduce_op = op.reduce_op();
+    if (reduce_op == "Add") {
+      BuildReduceBody<AddOp>(element_type, &reduce_scatter.computation(),
+                             &rewriter);
+    } else if (reduce_op == "Mul") {
+      BuildReduceBody<MulOp>(element_type, &reduce_scatter.computation(),
+                             &rewriter);
+    } else if (reduce_op == "Min") {
+      BuildReduceBody<MinOp>(element_type, &reduce_scatter.computation(),
+                             &rewriter);
+    } else if (reduce_op == "Max") {
+      BuildReduceBody<MaxOp>(element_type, &reduce_scatter.computation(),
+                             &rewriter);
+    } else {
+      // For mean, add replicas in the same group. Then divide the sum by the
+      // number of replicas in each group below.
+      assert(reduce_op == "Mean");
+      BuildReduceBody<AddOp>(element_type, &reduce_scatter.computation(),
+                             &rewriter);
+    }
+    Value result = reduce_scatter.getResult();
+
+    // For mean, divide the merge result by group size.
+    if (reduce_op == "Mean") {
+      int64_t replica_group_size = replica_groups.getType().getDimSize(1);
+      if (replica_group_size == 0) return failure();
       auto divisor = GetScalarConstOfType(element_type, loc, replica_group_size,
                                           &rewriter);
       auto broadcast_dims = GetI64ElementsAttr({}, &rewriter);
@@ -6650,7 +6505,7 @@ class ConvertDynamicExpandDimsOp : public OpRewritePattern<TF::ExpandDimsOp> {
         op.getLoc(),
         RankedTensorType::get({input_ty.getRank()}, rewriter.getIndexType()),
         input);
-    auto expand_dims = llvm::to_vector<6>(expand_dims_attr.getIntValues());
+    auto expand_dims = llvm::to_vector<6>(expand_dims_attr.getValues<APInt>());
 
     llvm::SmallVector<Value, 4> dims;
     dims.resize(result_ty.getRank());
@@ -7188,261 +7043,9 @@ class ConvertPrintOp : public OpRewritePattern<TF::PrintOp> {
     return success();
   }
 };
-
-// Emits debug information which includes the number of ops of each type which
-// failed to legalize.
-void EmitLegalizationErrors(Operation *op,
-                            const DenseSet<Operation *> &nonlegalized_ops) {
-  // Track the legalization failures by mapping op name to information about
-  // that failure: the number of unlegalized occurrences of the op, and one
-  // example operation that failed.
-  std::map<StringRef, std::pair<int, Operation *>> op_name_to_error_info;
-  DenseSet<Operation *> error_ops;
-  for (Operation *nonlegalized_op : nonlegalized_ops) {
-    // Increment count of this legalization failure.
-    StringRef op_name = nonlegalized_op->getName().getStringRef();
-    // If this emplace is successful, it's the first time we've encountered
-    // this op type. Initialize count to 0 so that after increment, it is 1.
-    auto insertion_result = op_name_to_error_info.emplace(
-        op_name, std::make_pair(0, nonlegalized_op));
-    ++insertion_result.first->second.first;
-  }
-  std::vector<std::string> error_messages;
-  error_messages.reserve(op_name_to_error_info.size());
-  for (const auto &op_info : op_name_to_error_info) {
-    error_messages.push_back(
-        llvm::formatv("{0} (count: {1})", op_info.first, op_info.second.first));
-  }
-  Location loc = op->getLoc();
-  emitError(loc) << "The following operations cannot be legalized: "
-                 << llvm::join(error_messages, "; ")
-                 << ". These legalization failure(s) may be due to missing TF "
-                    "to HLO lowerings and/or unsupported attributes, etc.";
-  // Emit more information about the missing ops. This error message
-  // contains useful details beyond the op name (input and output shapes,
-  // attributes, etc.).
-  if (!VLOG_IS_ON(1) && nonlegalized_ops.size() != 1) {
-    emitError(loc)
-        << "Emitting more detail about one op that failed to legalize...";
-  } else if (VLOG_IS_ON(1)) {
-    emitError(loc) << "Emitting more detail about one of each type of op "
-                      "that failed to legalize...";
-  }
-  for (const auto &op_info : op_name_to_error_info) {
-    op_info.second.second->emitOpError() << "is not legalizable";
-    if (!VLOG_IS_ON(1)) break;
-  }
-}
-
-// Performs the lowering to XLA dialect.
-void LegalizeTF::runOnFunction() {
-  llvm::Optional<StringRef> tf2xla_fallback_device_type = llvm::None;
-  if (use_tf2xla_fallback_) {
-    tf2xla_fallback_device_type = device_type_;
-  }
-  if (failed(legalizeTF(getFunction(), allow_partial_conversion_,
-                        legalize_chlo_, tf2xla_fallback_device_type,
-                        prefer_tf2xla_))) {
-    signalPassFailure();
-  }
-}
-
-// Patterns whose root op is in the set `include_ops` are moved from the set
-// `from` to the returned set. This is used to partition patterns by op so they
-// can be cleanly migrated from the old bridge to the MLIR bridge.
-OwningRewritePatternList PatternsIncludeOps(
-    OwningRewritePatternList &from,
-    const llvm::DenseSet<mlir::TypeID> &include_ops) {
-  OwningRewritePatternList to(from.getContext());
-  // Filter NativePatterns.
-  for (auto &pattern : from.getNativePatterns()) {
-    Optional<OperationName> pat_op_name = pattern->getRootKind();
-    // If the pattern does not have a specific operation, always include it,
-    // If the pattern is in include_ops then include it.
-    bool include =
-        !pat_op_name ||
-        include_ops.count(pat_op_name->getAbstractOperation()->typeID);
-    if (include) to.add(std::move(pattern));
-  }
-
-  // Don't filter PDLPatterns.
-  to.add(std::move(from.getPDLPatterns()));
-
-  return to;
-}
-
-/// Returns ops that should use MLIR legalization only in the case of
-/// prefer_tf2xla. All other ops not in this list should use XlaOpKernel
-/// legalization only or not be legalized by the new bridge.
-const llvm::DenseSet<mlir::TypeID> &MlirPreferredOps() {
-  // The static variable is a pointer in order to avoid destruction upon thread
-  // termination.
-
-  // clang-format off
-  static const llvm::DenseSet<mlir::TypeID>* ops =
-      new llvm::DenseSet<mlir::TypeID>{
-    // Ops that are legalized in the old bridge using MlirXlaOpKernel
-    TypeID::get<TF::AbsOp>(),
-    TypeID::get<TF::AtanOp>(),
-    TypeID::get<TF::AvgPool3DOp>(),
-    TypeID::get<TF::BiasAddGradOp>(),
-    TypeID::get<TF::CeilOp>(),
-    TypeID::get<TF::CheckNumericsOp>(),
-    TypeID::get<TF::ComplexOp>(),
-    TypeID::get<TF::CosOp>(),
-    TypeID::get<TF::DiagPartOp>(),
-    TypeID::get<TF::DivOp>(),
-    TypeID::get<TF::EinsumOp>(),
-    TypeID::get<TF::ExpOp>(),
-    TypeID::get<TF::Expm1Op>(),
-    TypeID::get<TF::FakeQuantWithMinMaxArgsOp>(),
-    TypeID::get<TF::FloorOp>(),
-    TypeID::get<TF::GreaterEqualOp>(),
-    TypeID::get<TF::IFFTOp>(),
-    TypeID::get<TF::ImagOp>(),
-    TypeID::get<TF::IsFiniteOp>(),
-    TypeID::get<TF::IsInfOp>(),
-    TypeID::get<TF::IsNanOp>(),
-    TypeID::get<TF::LessEqualOp>(),
-    TypeID::get<TF::LgammaOp>(),
-    TypeID::get<TF::Log1pOp>(),
-    TypeID::get<TF::LogicalOrOp>(),
-    TypeID::get<TF::LogSoftmaxOp>(),
-    TypeID::get<TF::MatrixBandPartOp>(),
-    TypeID::get<TF::MaxPool3DGradOp>(),
-    TypeID::get<TF::PreventGradientOp>(),
-    TypeID::get<TF::RandomShuffleOp>(),
-    TypeID::get<TF::RealOp>(),
-    TypeID::get<TF::ReciprocalOp>(),
-    TypeID::get<TF::ReluOp>(),
-    TypeID::get<TF::Relu6Op>(),
-    TypeID::get<TF::ReluGradOp>(),
-    TypeID::get<TF::RsqrtOp>(),
-    TypeID::get<TF::SelectOp>(),
-    TypeID::get<TF::SigmoidOp>(),
-    TypeID::get<TF::SignOp>(),
-    TypeID::get<TF::SoftmaxOp>(),
-    TypeID::get<TF::SqrtOp>(),
-    TypeID::get<TF::SqrtGradOp>(),
-    TypeID::get<TF::SquaredDifferenceOp>(),
-    TypeID::get<TF::TanhOp>(),
-    TypeID::get<TF::TanhGradOp>(),
-    TypeID::get<TF::XlogyOp>(),
-    TypeID::get<TF::ZetaOp>(),
-
-    // Ops that have no XlaOpKernel.
-    TypeID::get<TF::RiscAddOp>(),
-    TypeID::get<TF::RiscDotOp>(),
-
-    // Const op has a simple legalization and it is much more efficient to lower
-    // within MLIR.
-    TypeID::get<TF::ConstOp>(),
-
-    // AssertOp with string types are not supported by the fallback.
-    TypeID::get<TF::AssertOp>(),
-
-    // TF2XLA fallback pattern doesn't support these op as MLIR hlo builder
-    // doesn't override the necessary builder methods. These ops have simple
-    // lowering pattern so this should be safe.
-    TypeID::get<TF::CrossReplicaSumOp>(),
-    TypeID::get<TF::InfeedDequeueTupleOp>(),
-    TypeID::get<TF::OutfeedEnqueueTupleOp>(),
-    TypeID::get<TF::XlaShardingOp>(),
-  };
-  // clang-format on
-  return *ops;
-}
-
 }  // end namespace
 
 #include "tensorflow/compiler/mlir/xla/transforms/generated_legalize_tf.inc"
-
-LogicalResult legalizeTF(Operation *op, bool allow_partial_conversion,
-                         bool legalize_chlo,
-                         llvm::Optional<StringRef> tf2xla_fallback_device_type,
-                         bool prefer_tf2xla) {
-  MLIRContext *context = op->getContext();
-  OwningRewritePatternList legalize_lower_patterns(context);
-  // Note that the `OperationConverter` orders patterns lexicographically by:
-  // 1) Ascending legalization depth (i.e., minimum number of patterns necessary
-  //    to arrive at conversion target). This requires relevant patterns to
-  //    specify the list of ops generated by it which most of patterns
-  //    implemented in C++ don't do so this comparison doesn't work in those
-  //    cases.
-  // 2) Descending pattern benefit.
-  // 3) Op specific patterns over patterns with MatchAnyOpTypeTag.
-  // 4) Order of patterns in `OwningRewritePatternList`.
-
-  // Add TF->HLO legalization patterns.
-  PopulateLegalizeTfPatterns(context, &legalize_lower_patterns);
-
-  // Add TF->TF lowering patterns.
-  TF::PopulateTFLoweringBeforeHLOPatterns(context, &legalize_lower_patterns);
-
-  if (tf2xla_fallback_device_type && prefer_tf2xla) {
-    VLOG(1) << "TF to XLA legalization patterns are partitioned by op into "
-               "either native MLIR legalization, or TF2XLA fallback "
-               "legalzation, with a preference toward TF2XLA.";
-  } else if (tf2xla_fallback_device_type) {
-    VLOG(1) << "TF to XLA legalization patterns include all native patterns "
-               "and TF2XLA fallback patterns.";
-  } else {
-    VLOG(1) << "TF to XLA legalization patterns are native patterns only.";
-  }
-
-  // Set patterns to legalize_lower_patters, where in the prefer_tf2xla case
-  // only patterns whose ops are in the set MlirPreferredOps are kept.
-  OwningRewritePatternList patterns =
-      (tf2xla_fallback_device_type && prefer_tf2xla)
-          ? PatternsIncludeOps(legalize_lower_patterns, MlirPreferredOps())
-          : std::move(legalize_lower_patterns);
-
-  if (tf2xla_fallback_device_type) {
-    // Add TF->HLO legalization patterns via TF2XLA fallback.
-    PopulateLegalizeTfWithTf2XlaPatterns(tf2xla_fallback_device_type.getValue(),
-                                         patterns, context, prefer_tf2xla);
-  }
-
-  // Populate with CHLO->HLO lowerings to account for TF ops legalized to
-  // CHLO first.
-  if (legalize_chlo) {
-    chlo::PopulateDecomposeChloPatterns(context, &patterns);
-    chlo::PopulateChloBroadcastingPatterns(context, &patterns);
-  }
-  // ConstantLike op is convenient to create splat constants, but is
-  // canonicalized to plain HLO constant if statically shaped. Add the
-  // canonicalization pattern to pattern list to enable multi-hop lowering.
-  chlo::ConstantLikeOp::getCanonicalizationPatterns(patterns, context);
-
-  ConversionTarget target(*context);
-  if (legalize_chlo) {
-    target.addIllegalDialect<chlo::HloClientDialect>();
-  } else {
-    target.addLegalDialect<chlo::HloClientDialect>();
-  }
-  target.addLegalDialect<MhloDialect>();
-  target.addLegalDialect<StandardOpsDialect>();
-  target.addLegalDialect<tensor::TensorDialect>();
-  target.addLegalDialect<shape::ShapeDialect>();
-  target.addLegalOp<CallOp>();
-
-  if (!allow_partial_conversion) {
-    // Fully qualify ReturnOp here as mhlo dialect also defines a ReturnOp.
-    target.addLegalOp<ModuleOp, FuncOp, ::mlir::ReturnOp>();
-    DenseSet<Operation *> nonlegalized_ops;
-    LogicalResult result = applyPartialConversion(
-        op, target, std::move(patterns), &nonlegalized_ops);
-    // In order to enforce that the conversion result is fully converted,
-    // fail if there are any nonlegalized ops in the set.
-    if (failed(result) || !nonlegalized_ops.empty()) {
-      EmitLegalizationErrors(op, nonlegalized_ops);
-      return failure();
-    }
-    return result;
-  }
-
-  return applyPartialConversion(op, target, std::move(patterns));
-}
 
 void PopulateLegalizeTfPatterns(MLIRContext *context,
                                 OwningRewritePatternList *patterns) {
@@ -7524,6 +7127,7 @@ void PopulateLegalizeTfPatterns(MLIRContext *context,
     ConvertXlaShardingOp,
     ConvertXlaDynamicUpdateSliceOp,
     ConvertXlaAllReduceOp,
+    ConvertXlaReduceScatterOp,
     ConvertRollOp,
     ConvertLeakyReluOp,
     ConvertLeakyReluGradOp,
@@ -7534,19 +7138,10 @@ void PopulateLegalizeTfPatterns(MLIRContext *context,
     ConvertUnpackOpDynamic,
     ConvertSignOpDynamic,
     ConvertSigmoidGradOpDynamic,
-    ConvertGatherV2OpDynamic,
     ConvertConv2DDynamic,
     ConvertPadOpDynamic,
     ConvertGatherNdOpDynamic>(context);
   // clang-format on
-}
-
-std::unique_ptr<OperationPass<FuncOp>> createLegalizeTFPass(
-    bool allow_partial_conversion, bool legalize_chlo,
-    llvm::Optional<StringRef> tf2xla_fallback_device_type, bool prefer_tf2xla) {
-  return std::make_unique<LegalizeTF>(allow_partial_conversion, legalize_chlo,
-                                      tf2xla_fallback_device_type,
-                                      prefer_tf2xla);
 }
 
 }  // end namespace mhlo

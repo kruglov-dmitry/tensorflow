@@ -15,10 +15,10 @@ limitations under the License.
 #include <deque>
 
 #include "tensorflow/core/common_runtime/device.h"
-#include "tensorflow/core/common_runtime/metrics.h"
 #include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/data/stats_utils.h"
+#include "tensorflow/core/framework/metrics.h"
 #include "tensorflow/core/framework/stats_aggregator.h"
 #include "tensorflow/core/kernels/data/parallel_map_dataset_op.h"
 #include "tensorflow/core/kernels/ragged_tensor_variant.h"
@@ -502,6 +502,7 @@ class ParseExampleDatasetOp : public UnaryDatasetOpKernel {
           }
           result.end_of_input = reader->Contains(full_name(strings::StrCat(
               kInvocationResults, "[", i, "]", kEndOfInputSuffix)));
+          RecordBufferEnqueue(ctx, result.return_values);
           result.notification.Notify();
         }
         return Status::OK();
@@ -605,8 +606,7 @@ class ParseExampleDatasetOp : public UnaryDatasetOpKernel {
             },
             std::move(input_element));
         auto node = model_node();
-        const bool collect_usage =
-            node && ctx->model() && ctx->model()->collect_resource_usage();
+        const bool collect_usage = node && ctx->model();
         // `ctx->runner()` may execute its logic synchronous so we wrap it in
         // `RecordStop` and `RecordStart` to prevent invalid nesting of
         // `RecordStart` calls.

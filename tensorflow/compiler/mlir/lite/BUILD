@@ -22,11 +22,13 @@ package_group(
     packages = [
         "//learning/brain/experimental/mlir/tflite/tfmrt/...",
         "//learning/brain/mlir/...",
+        "//third_party/auroraml/...",
         "//third_party/iree/...",
         "//tensorflow/compiler/mlir/...",
         "//tensorflow/lite/python/...",
         # Allow visibility from the mlir language server.
         "//learning/brain/mlir/mlir_lsp_server/...",
+        "//research/language_modeling/sentence_explorer/ondevice/...",
     ],
 )
 
@@ -520,6 +522,7 @@ cc_library(
         "transforms/get_arithmetic_count.cc",
         "transforms/insert_call_once_op.cc",
         "transforms/legalize_hashtables.cc",
+        "transforms/legalize_jax_random.cc",
         "transforms/legalize_tf.cc",
         "transforms/legalize_tf_while.cc",
         "transforms/legalize_variables.cc",
@@ -528,6 +531,7 @@ cc_library(
         "transforms/prepare_composite_functions_tf.cc",
         "transforms/prepare_tf.cc",
         "transforms/raise_custom_ops.cc",
+        "transforms/reduce_while_operands.cc",
         "transforms/runtime_verify.cc",
         "transforms/split_merged_operands.cc",
         "transforms/trim_functions_tf.cc",
@@ -580,6 +584,7 @@ cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:Analysis",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LoopLikeInterface",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:QuantOps",
         "@llvm-project//mlir:StandardOps",
@@ -668,12 +673,10 @@ cc_library(
     ],
     deps = [
         ":tensorflow_lite",
-        "//tensorflow/lite/tools/optimize/sparsity:format_converter",
+        "//tensorflow/lite/kernels/internal/utils:sparsity_format_converter",
         "//third_party/eigen3",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/strings",
-        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:StandardOps",
@@ -779,8 +782,10 @@ cc_library(
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/core/platform:errors",
         "//tensorflow/core/platform:status",
+        "//tensorflow/core/platform:statusor",
         "//tensorflow/lite/kernels/internal:kernel_utils",
         "//tensorflow/lite/schema:schema_fbs",
+        "//tensorflow/lite/schema:schema_utils",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/strings",
         "@flatbuffers",
@@ -1157,25 +1162,5 @@ cc_library(
     deps = [
         "@com_google_absl//absl/container:flat_hash_set",
         "@llvm-project//llvm:Support",
-    ],
-)
-
-# Smaller version of flatbuffer_translate which only converts flatbuffer to MLIR.
-cc_library(
-    name = "flatbuffer_to_mlir",
-    srcs = [
-        "flatbuffer_to_mlir.cc",
-    ],
-    hdrs = [
-        "flatbuffer_to_mlir.h",
-    ],
-    deps = [
-        ":flatbuffer_import",
-        "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:QuantOps",
-        "@llvm-project//mlir:StandardOps",
-        "@llvm-project//mlir:Support",
-        "@llvm-project//mlir:Translation",
     ],
 )

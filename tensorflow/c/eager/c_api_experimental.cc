@@ -704,6 +704,11 @@ void TFE_ContextSetLogDevicePlacement(TFE_Context* ctx, unsigned char enable,
   tensorflow::unwrap(ctx)->SetLogDevicePlacement(enable);
 }
 
+void TFE_ContextSetRunEagerOpAsFunction(TFE_Context* ctx, unsigned char enable,
+                                        TF_Status* status) {
+  tensorflow::unwrap(ctx)->SetRunEagerOpAsFunction(enable);
+}
+
 const char* TFE_TensorHandleDeviceType(TFE_TensorHandle* h, TF_Status* status) {
   if (h == nullptr) {
     status->status = tensorflow::errors::InvalidArgument("Invalid handle");
@@ -718,6 +723,11 @@ int TFE_TensorHandleDeviceID(TFE_TensorHandle* h, TF_Status* status) {
     return -1;
   }
   return tensorflow::unwrap(h)->DeviceId(&status->status);
+}
+
+TF_CAPI_EXPORT extern void TFE_TensorHandleGetStatus(TFE_TensorHandle* h,
+                                                     TF_Status* status) {
+  status->status = tensorflow::unwrap(h)->TensorHandleStatus();
 }
 
 void TFE_GetExecutedOpNames(TFE_Context* ctx, TF_Buffer* buf,

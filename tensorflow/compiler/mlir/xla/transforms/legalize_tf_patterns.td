@@ -82,7 +82,9 @@ foreach fromToBinPair = [[TF_AddV2Op, HLOClient_BroadcastAddOp],
                          [TF_LeftShiftOp, HLOClient_BroadcastShiftLeftOp],
                          [TF_MaximumOp, HLOClient_BroadcastMaxOp],
                          [TF_MinimumOp, HLOClient_BroadcastMinOp],
+                         [TF_ModOp, HLOClient_BroadcastRemOp],
                          [TF_MulOp, HLOClient_BroadcastMulOp],
+                         [TF_NextAfterOp, HLOClient_BroadcastNextAfterOp],
                          [TF_PolygammaOp, HLOClient_BroadcastPolygammaOp],
                          [TF_PowOp, HLOClient_BroadcastPowOp],
                          [TF_RealDivOp, HLOClient_BroadcastDivOp],
@@ -548,8 +550,8 @@ def : Pattern<
 // Slice op patterns.
 //===----------------------------------------------------------------------===//
 
-def CastToI64AndUnpackTensor: NativeCodeCall<
-  "UnpackTensorAlongZeroDim($0.getLoc(), CastValueToI64($0.getLoc(), $1, &$_builder), &$_builder).output()">;
+def UnpackStartingIndices: NativeCodeCall<
+  "UnpackTensorAlongZeroDim($0.getLoc(), $1, &$_builder).output()">;
 
 def CanBeTranslatedToDynamicSlice : Constraint<CPred<
   "CanBeTranslatedToDynamicSlice($0, $1, $2.cast<DenseIntElementsAttr>())">>;
@@ -561,7 +563,7 @@ def TFSliceSizes2HLOSliceSizes : NativeCodeCall<
 def : Pat<(TF_SliceOp:$op HLO_Tensor:$input, HLO_Tensor:$starting_indices,
            (ConstantLikeMatcher AnyAttr:$slice_sizes)),
           (HLO_DynamicSliceOp $input,
-           (CastToI64AndUnpackTensor $op, $starting_indices),
+           (UnpackStartingIndices $op, $starting_indices),
            (TFSliceSizes2HLOSliceSizes $input, $starting_indices, $slice_sizes)),
           [(CanBeTranslatedToDynamicSlice $input, $starting_indices,
             $slice_sizes)]>;
@@ -789,6 +791,16 @@ def ToPrecisionConfigsAttr : NativeCodeCall<"GetPrecisionConfigAttr($0, &$_build
 def HasValidDotDims : Constraint<CPred<"HasValidDotDims($0)">>;
 
 def HasValidPrecisionConfig : Constraint<CPred<"HasValidPrecisionConfig($0)">>;
+
+//===----------------------------------------------------------------------===//
+// XlaDotOp op.
+//===----------------------------------------------------------------------===//
+
+def : Pat<(TF_XlaDotOp $lhs, $rhs, $dimension_numbers, $precision_config),
+          (HLO_DotGeneralOp $lhs, $rhs,
+                            (ToDotDimNumsAttr $dimension_numbers),
+                            (ToPrecisionConfigsAttr $precision_config)),
+          [(HasValidDotDims $dimension_numbers), (HasValidPrecisionConfig $precision_config)]>;
 
 //===----------------------------------------------------------------------===//
 // XlaDotV2Op op.

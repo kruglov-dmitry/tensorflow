@@ -19,10 +19,10 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/common_runtime/input_colocation_exemption_registry.h"
-#include "tensorflow/core/common_runtime/metrics.h"
 #include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/data/stats_utils.h"
+#include "tensorflow/core/framework/metrics.h"
 #include "tensorflow/core/framework/model.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/stats_aggregator.h"
@@ -203,7 +203,7 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
       max_batch_results_ = std::min(
           kMaxBatchResults,
           CeilDiv(params.dataset->num_parallel_calls_ == model::kAutotune
-                      ? port::NumSchedulableCPUs()  // maximum parallelism
+                      ? GetCpuBudget()  // maximum parallelism
                       : params.dataset->num_parallel_calls_,
                   params.dataset->batch_size_));
     }
@@ -215,6 +215,8 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
 
     Status Initialize(IteratorContext* ctx) override {
       mutex_lock l(*mu_);
+      interleave_depth_ = ctx->interleave_depth();
+
       if (num_parallel_calls_->value == model::kAutotune) {
         num_parallel_calls_->value = ctx->runner_threadpool_size();
       }
@@ -334,6 +336,9 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
           parallelism == -1
               ? kTraceInfoUnavailable
               : strings::Printf("%lld", static_cast<long long>(parallelism))));
+      result.push_back(std::make_pair(
+          "interleave_depth",
+          strings::Printf("%lld", static_cast<long long>(interleave_depth_))));
       return result;
     }
 
@@ -689,6 +694,12 @@ class MapAndBatchDatasetOp::Dataset : public DatasetBase {
 
     // Method for deregistering the cancellation callback.
     std::function<void()> deregister_fn_;
+
+    // Records the number of ParallelInterleave operations in the path from the
+    // root node to this node (not including this node) in the input pipeline
+    // tree. We record the interleave depth so that it can be included in the
+    // trace metadata.
+    int64 interleave_depth_ = -1;
   };
 
   const DatasetBase* const input_;

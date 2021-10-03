@@ -273,22 +273,27 @@ class CudnnSupport : public dnn::DnnSupport {
   bool DoBatchNormalizationBackward(
       Stream* stream, const DeviceMemory<float>& y_backprop,
       const DeviceMemory<float>& x, const DeviceMemory<float>& scale,
-      const DeviceMemory<float>& mean, const DeviceMemory<float>& inv_var,
+      const DeviceMemory<float>& offset, const DeviceMemory<float>& mean,
+      const DeviceMemory<float>& inv_var, const DeviceMemory<float>& y,
       const dnn::BatchDescriptor& x_desc,
       const dnn::BatchDescriptor& scale_offset_desc, const double epsilon,
-      DeviceMemory<float>* x_backprop, DeviceMemory<float>* scale_backprop,
-      DeviceMemory<float>* offset_backprop,
+      dnn::ActivationMode activation_mode, DeviceMemory<float>* x_backprop,
+      DeviceMemory<float>* scale_backprop, DeviceMemory<float>* offset_backprop,
+      DeviceMemory<float>* side_input_backprop,
       DeviceMemory<uint8>* reserve_space_data,
       ScratchAllocator* workspace_allocator) override;
 
   bool DoBatchNormalizationBackward(
       Stream* stream, const DeviceMemory<Eigen::half>& y_backprop,
       const DeviceMemory<Eigen::half>& x, const DeviceMemory<float>& scale,
-      const DeviceMemory<float>& mean, const DeviceMemory<float>& inv_var,
+      const DeviceMemory<float>& offset, const DeviceMemory<float>& mean,
+      const DeviceMemory<float>& inv_var, const DeviceMemory<Eigen::half>& y,
       const dnn::BatchDescriptor& x_desc,
       const dnn::BatchDescriptor& scale_offset_desc, const double epsilon,
+      dnn::ActivationMode activation_mode,
       DeviceMemory<Eigen::half>* x_backprop,
       DeviceMemory<float>* scale_backprop, DeviceMemory<float>* offset_backprop,
+      DeviceMemory<Eigen::half>* side_input_backprop,
       DeviceMemory<uint8>* reserve_space_data,
       ScratchAllocator* workspace_allocator) override;
 
@@ -313,8 +318,8 @@ class CudnnSupport : public dnn::DnnSupport {
       const dnn::BatchDescriptor& output_descriptor,
       DeviceMemoryBase output_data,
       const dnn::ConvolutionDescriptor& convolution_descriptor,
-      const dnn::AlgorithmConfig& plan_config,
-      ScratchAllocator* scratch_allocator,
+      const dnn::ConvolveExecutionPlan& execution_plan,
+      DeviceMemoryBase scratch_memory,
       dnn::ProfileResult* output_profile_result);
 
   port::Status DoFusedConvolve(
@@ -344,8 +349,8 @@ class CudnnSupport : public dnn::DnnSupport {
       const dnn::BatchDescriptor& bias_descriptor, DeviceMemoryBase biases,
       dnn::ActivationMode activation_mode,
       const dnn::BatchDescriptor& output_descriptor,
-      DeviceMemoryBase output_data, ScratchAllocator* scratch_allocator,
-      const dnn::AlgorithmConfig& algorithm_config,
+      DeviceMemoryBase output_data, DeviceMemoryBase scratch_memory,
+      const dnn::ConvolveExecutionPlan& execution_plan,
       dnn::ProfileResult* output_profile_result);
 
   bool DoConvolveQuantized(
@@ -585,11 +590,14 @@ class CudnnSupport : public dnn::DnnSupport {
   port::Status DoBatchNormalizationBackwardImpl(
       Stream* stream, int cudnn_input_type, int cudnn_scale_type,
       const DeviceMemory<T>& y_backprop, const DeviceMemory<T>& x,
-      const DeviceMemory<U>& scale, const DeviceMemory<U>& mean,
-      const DeviceMemory<U>& inv_var, const dnn::BatchDescriptor& x_desc,
+      const DeviceMemory<U>& scale, const DeviceMemory<U>& offset,
+      const DeviceMemory<U>& mean, const DeviceMemory<U>& inv_var,
+      const DeviceMemory<T>& y, const dnn::BatchDescriptor& x_desc,
       const dnn::BatchDescriptor& scale_offset_desc, const double epsilon,
-      DeviceMemory<T>* x_backprop, DeviceMemory<U>* scale_backprop,
-      DeviceMemory<U>* offset_backprop, DeviceMemory<uint8>* reserve_space_data,
+      dnn::ActivationMode activation_mode, DeviceMemory<T>* x_backprop,
+      DeviceMemory<U>* scale_backprop, DeviceMemory<U>* offset_backprop,
+      DeviceMemory<T>* side_input_backprop,
+      DeviceMemory<uint8>* reserve_space_data,
       ScratchAllocator* workspace_allocator);
 
   template <class T>
